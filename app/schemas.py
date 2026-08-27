@@ -7,7 +7,7 @@ tool, fills the right arguments, and knows when to ask a question instead.
 
 Rules used throughout:
 
-* Say **when** to use the tool, not just what it does ("use this before
+* Say **when** to use the tool, not just what it does ("call this before
   quoting any price").
 * Use ``enum`` wherever the value set is closed. It is the cheapest possible
   guard against invented arguments.
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.data import PAYMENT_METHODS
+from app.data import CATEGORIES, PAYMENT_METHODS
 
 
 def _fn(name: str, description: str, properties: dict[str, Any],
@@ -43,25 +43,26 @@ def _fn(name: str, description: str, properties: dict[str, Any],
 
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
+    # --- discovery --------------------------------------------------------
     _fn(
         "get_menu",
-        "List the restaurant's dishes with real prices. Call this whenever the "
-        "customer asks what is available, or before recommending anything. "
-        "Omit `category` to get the whole menu.",
+        "List dishes with real prices, most popular first. The menu is large, "
+        "so this returns a page rather than everything -- prefer search_dish "
+        "when the customer states any constraint. Never describe this page as "
+        "the complete menu unless the response says so.",
         {
             "category": {
                 "type": "string",
-                "enum": ["Starters", "Mains", "Breads", "Rice & Biryani",
-                         "Desserts", "Beverages"],
+                "enum": CATEGORIES,
                 "description": "Restrict the listing to one menu section.",
             }
         },
     ),
     _fn(
         "search_dish",
-        "Find dishes by keyword, diet, price ceiling or spice level. Prefer this "
-        "over get_menu when the customer states a constraint such as "
-        "'vegetarian', 'under 300', 'something spicy' or 'chicken'.",
+        "Find dishes by keyword, diet, price ceiling or spice level. Use this "
+        "whenever the customer says something like 'vegetarian', 'under 300', "
+        "'something spicy' or 'chicken'.",
         {
             "query": {
                 "type": "string",
@@ -84,6 +85,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     ),
+    _fn(
+        "popular_dishes",
+        "The restaurant's best sellers, ranked by units actually sold across "
+        "all customers. Use this for 'what's good here?', 'what do you "
+        "recommend?' or 'what's popular?' -- never answer those from memory.",
+        {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20,
+                      "description": "How many dishes to return. Defaults to 8."},
+            "diet": {"type": "string", "enum": ["veg", "nonveg", "vegan"],
+                     "description": "Restrict the ranking to one diet."},
+        },
+    ),
+
+    # --- cart -------------------------------------------------------------
     _fn(
         "add_to_cart",
         "Put a dish into the customer's cart. Use the exact dish name from the "
@@ -139,12 +154,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         {"pincode": {"type": "string", "description": "6-digit delivery pincode."}},
         required=["pincode"],
     ),
+
+    # --- ordering ---------------------------------------------------------
     _fn(
         "place_order",
         "Confirm the order. Every argument is mandatory: if you are missing any "
         "of them, ASK THE CUSTOMER FOR IT AND DO NOT CALL THIS TOOL YET. Never "
-        "invent a name, phone number or address. The order id comes back in the "
-        "response -- quote that id, never one you made up.",
+        "invent a name, phone number or address -- but you may offer the saved "
+        "details from get_my_profile and use them once the customer agrees. The "
+        "order id comes back in the response; quote that, never one you made up.",
         {
             "customer_name": {"type": "string", "description": "Full name of the customer."},
             "phone": {"type": "string", "description": "10-digit mobile number."},
@@ -161,23 +179,43 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     ),
     _fn(
         "order_status",
-        "Look up a placed order and report its live stage (confirmed, preparing, "
-        "out_for_delivery, delivered or cancelled). Only use an order id that "
-        "came from place_order in this conversation.",
+        "Look up one of this customer's orders and report its live stage "
+        "(confirmed, preparing, out_for_delivery, delivered or cancelled). Only "
+        "use an order id that came from place_order or find_past_orders.",
         {"order_id": {"type": "string", "description": "Order id such as ORD-1042."}},
         required=["order_id"],
     ),
     _fn(
         "cancel_order",
-        "Cancel a placed order. This is refused once the order is out for "
-        "delivery -- if that happens, relay the refusal and the support number "
-        "rather than trying again.",
+        "Cancel one of this customer's orders. This is refused once the order "
+        "is out for delivery -- if that happens, relay the refusal and the "
+        "support number rather than trying again. Always call this tool; never "
+        "decide yourself whether a cancellation is allowed.",
         {
             "order_id": {"type": "string", "description": "Order id to cancel."},
             "reason": {"type": "string",
                        "description": "Why the customer is cancelling, if they said."},
         },
         required=["order_id"],
+    ),
+    _fn(
+        "find_past_orders",
+        "This customer's own order history, newest first, with items and "
+        "totals. Use it for 'what did I order last time?', 'reorder my usual' "
+        "or 'where is my order?' when no id was given.",
+        {"limit": {"type": "integer", "minimum": 1, "maximum": 10,
+                   "description": "How many past orders to return. Defaults to 5."}},
+    ),
+
+    # --- memory and grounding --------------------------------------------
+    _fn(
+        "get_my_profile",
+        "Who this signed-in customer is: their name, how many orders they have "
+        "placed, their most-ordered dishes, and the delivery details they used "
+        "last time. Call this before asking for a name, phone or address -- if "
+        "saved details exist, offer them ('same address as last time?') instead "
+        "of making the customer type it all again.",
+        {},
     ),
     _fn(
         "get_current_time",

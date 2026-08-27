@@ -1,27 +1,33 @@
 /* ==========================================================================
    Bites & Bytes — front end
-   Vanilla JS, no framework. Four jobs:
-     1. keep a session id so the server can find this tab's cart
-     2. POST messages to /api/chat and render the reply
-     3. render the tool trace that came back with it
-     4. mirror cart + orders into the right-hand panel
-   ========================================================================== */
+   Vanilla JS, no framework. Five jobs:
+     1. sign in / register, and gate the app behind that
+     2. list the user's chats and switch between them
+     3. POST messages to /api/chat and render the reply
+     4. render the tool trace that came back with it
+     5. mirror cart + orders into the right-hand panel
 
-const API = {
-  health: "/api/health",
-  menu: "/api/menu",
-  tools: "/api/tools",
-  cart: (id) => `/api/cart?session_id=${encodeURIComponent(id)}`,
-  chat: "/api/chat",
-  reset: "/api/reset",
-};
+   There is no session id in JavaScript: identity is an HttpOnly cookie the
+   browser attaches automatically, which this script cannot read by design.
+   ========================================================================== */
 
 const el = (id) => document.getElementById(id);
 
+/* auth screen */
+const authScreen = el("auth-screen");
+const authForm = el("auth-form");
+const authError = el("auth-error");
+const authSubmit = el("auth-submit");
+const nameField = el("name-field");
+
+/* app shell */
+const appShell = el("app");
 const chatLog = el("chat-log");
+const chatTitle = el("chat-title");
 const composer = el("composer");
 const input = el("message-input");
 const sendBtn = el("send-btn");
+const chatList = el("chat-list");
 const traceList = el("trace-list");
 const cartItems = el("cart-items");
 const cartSummary = el("cart-summary");
@@ -31,58 +37,113 @@ const menuList = el("menu-list");
 const categoryFilters = el("category-filters");
 const toolList = el("tool-list");
 const statusPill = el("status-pill");
+const userPill = el("user-pill");
 
-let sessionId = loadSessionId();
+let authMode = "login";
 let currency = "₹";
 let menuData = [];
 let activeCategory = "All";
-let turnCounter = 0;
+let conversationId = null;
 let busy = false;
 
-/* ── Session id ───────────────────────────────────────────────────────── */
-
-function loadSessionId() {
-  // Persisted so a page refresh keeps the same cart. Wrapped because private
-  // windows and blocked-storage settings make localStorage throw, not return null.
-  try {
-    const saved = localStorage.getItem("bb-session");
-    if (saved) return saved;
-    const fresh = newId();
-    localStorage.setItem("bb-session", fresh);
-    return fresh;
-  } catch {
-    return newId();
-  }
-}
-
-function newId() {
-  return `s-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
-}
+const SUGGESTIONS = [
+  "What do you recommend?",
+  "Something vegan under ₹300",
+  "What did I order last time?",
+  "Is the kitchen open right now?",
+];
 
 /* ── Boot ─────────────────────────────────────────────────────────────── */
 
 init();
 
 async function init() {
+  wireAuth();
   wireTabs();
-  wireSuggestions();
   wireComposer();
-  el("reset-btn").addEventListener("click", resetSession);
+  el("logout-btn").addEventListener("click", logout);
+  el("new-chat-btn").addEventListener("click", () => startChat());
+
+  try {
+    const session = await getJSON("/api/auth/me");
+    await enterApp(session.user);
+  } catch {
+    showAuth(); // not signed in — normal on a first visit
+  }
+}
+
+/* ── Authentication ───────────────────────────────────────────────────── */
+
+function wireAuth() {
+  document.querySelectorAll(".auth-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      authMode = tab.dataset.mode;
+      document.querySelectorAll(".auth-tab")
+        .forEach((t) => t.classList.toggle("is-active", t === tab));
+      nameField.hidden = authMode === "login";
+      nameField.querySelector("input").required = authMode === "register";
+      authForm.password.autocomplete =
+        authMode === "login" ? "current-password" : "new-password";
+      authSubmit.textContent = authMode === "login" ? "Sign in" : "Create account";
+      hide(authError);
+    });
+  });
+
+  authForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    hide(authError);
+    authSubmit.disabled = true;
+
+    const body = {
+      email: authForm.email.value.trim(),
+      password: authForm.password.value,
+    };
+    if (authMode === "register") body.display_name = authForm.display_name.value.trim();
+
+    try {
+      const data = await postJSON(`/api/auth/${authMode}`, body);
+      authForm.reset();
+      await enterApp(data.user);
+    } catch (error) {
+      show(authError, error.message);
+    } finally {
+      authSubmit.disabled = false;
+    }
+  });
+}
+
+function showAuth() {
+  authScreen.hidden = false;
+  appShell.hidden = true;
+}
+
+async function enterApp(user) {
+  authScreen.hidden = true;
+  appShell.hidden = false;
+  userPill.textContent = user.display_name;
 
   await Promise.all([loadHealth(), loadMenu(), loadTools()]);
-  await refreshCart();
+  await loadChats({ openFirst: true });
   input.focus();
 }
 
+async function logout() {
+  await postJSON("/api/auth/logout", {});
+  conversationId = null;
+  chatLog.innerHTML = "";
+  chatList.innerHTML = "";
+  showAuth();
+}
+
+/* ── Reference data ───────────────────────────────────────────────────── */
+
 async function loadHealth() {
   try {
-    const health = await getJSON(API.health);
+    const health = await getJSON("/api/health");
     el("tool-count").textContent = health.tool_count;
-    if (health.configured) {
-      setStatus("ok", `connected · ${health.deployment}`);
-    } else {
-      setStatus("bad", `missing ${health.missing_env.join(", ")}`);
-    }
+    el("dish-count").textContent = health.dish_count.toLocaleString();
+    if (health.configured) setStatus("ok", `connected · ${health.deployment}`);
+    else setStatus("bad", `missing ${health.missing_env.join(", ")}`);
   } catch {
     setStatus("bad", "server unreachable");
   }
@@ -93,10 +154,8 @@ function setStatus(kind, text) {
   statusPill.className = `pill pill-${kind}`;
 }
 
-/* ── Menu panel ───────────────────────────────────────────────────────── */
-
 async function loadMenu() {
-  const data = await getJSON(API.menu);
+  const data = await getJSON("/api/menu");
   currency = data.currency;
   menuData = data.dishes;
 
@@ -133,16 +192,13 @@ function renderMenu() {
       <div class="dish-meta">
         <span class="tag tag-${dish.diet}">${dish.diet}</span>
         <span class="tag">${esc(dish.spice)}</span>
-        <span class="tag">${dish.prep_minutes} min</span>
+        ${dish.times_ordered ? `<span class="tag">${dish.times_ordered} sold</span>` : ""}
       </div>
-    </article>
-  `).join("");
+    </article>`).join("");
 }
 
-/* ── Tools panel ──────────────────────────────────────────────────────── */
-
 async function loadTools() {
-  const data = await getJSON(API.tools);
+  const data = await getJSON("/api/tools");
   toolList.innerHTML = data.tools.map((tool) => `
     <article class="tool-card">
       <div class="tool-name">${esc(tool.name)}()</div>
@@ -156,8 +212,95 @@ async function loadTools() {
               </span>`).join("")
           : `<span class="param">no parameters</span>`}
       </div>
-    </article>
-  `).join("");
+    </article>`).join("");
+}
+
+/* ── Conversations ────────────────────────────────────────────────────── */
+
+async function loadChats({ openFirst = false } = {}) {
+  const data = await getJSON("/api/conversations");
+  renderChatList(data.conversations);
+
+  if (openFirst) {
+    if (data.conversations.length) await openChat(data.conversations[0].id);
+    else await startChat();
+  }
+}
+
+function renderChatList(conversations) {
+  if (!conversations.length) {
+    chatList.innerHTML = `<div class="empty"><span class="empty-icon">💬</span>No chats yet.</div>`;
+    return;
+  }
+
+  chatList.innerHTML = "";
+  conversations.forEach((chat) => {
+    const row = document.createElement("div");
+    row.className = `chat-row${chat.id === conversationId ? " is-active" : ""}`;
+    row.innerHTML = `
+      <button class="chat-open" type="button">
+        <span class="chat-name">${esc(chat.title)}</span>
+        <span class="chat-meta">${chat.message_count} message${chat.message_count === 1 ? "" : "s"} · ${shortDate(chat.updated_at)}</span>
+      </button>
+      <button class="chat-delete" type="button" title="Delete chat" aria-label="Delete chat">×</button>`;
+
+    row.querySelector(".chat-open").addEventListener("click", () => openChat(chat.id));
+    row.querySelector(".chat-delete").addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await fetch(`/api/conversations/${chat.id}`, { method: "DELETE" });
+      if (chat.id === conversationId) conversationId = null;
+      await loadChats({ openFirst: true });
+    });
+    chatList.appendChild(row);
+  });
+}
+
+async function startChat() {
+  const created = await postJSON("/api/conversations", { title: "New chat" });
+  conversationId = created.id;
+  chatTitle.textContent = created.title;
+  chatLog.innerHTML = welcomeHtml();
+  wireSuggestions();
+  traceList.innerHTML = "";
+  renderCart({ items: [], subtotal: 0, item_count: 0, coupon_code: null }, []);
+  await loadChats();
+}
+
+/** Repaint a whole conversation from the database — messages, trace and cart. */
+async function openChat(id) {
+  const data = await getJSON(`/api/conversations/${id}`);
+  conversationId = id;
+  chatTitle.textContent = data.title;
+
+  if (data.messages.length) {
+    chatLog.innerHTML = "";
+    data.messages.forEach((m) => addMessage(m.role === "user" ? "user" : "bot", m.content));
+  } else {
+    chatLog.innerHTML = welcomeHtml();
+    wireSuggestions();
+  }
+
+  traceList.innerHTML = "";
+  renderTrace(data.trace, { grouped: true });
+  renderCart(data.cart, data.orders);
+  await loadChats();
+  scrollToEnd();
+}
+
+function welcomeHtml() {
+  return `
+    <div class="welcome">
+      <div class="welcome-icon">🍛</div>
+      <h2>What are you hungry for?</h2>
+      <p>
+        Ask in plain English. The assistant decides which of the
+        <strong>15 tools</strong> to call — watch the <em>Tool trace</em>
+        panel as it works.
+      </p>
+      <div class="suggestions">
+        ${SUGGESTIONS.map((s) => `<button class="suggestion" type="button">${esc(s)}</button>`).join("")}
+      </div>
+    </div>`;
 }
 
 /* ── Chat ─────────────────────────────────────────────────────────────── */
@@ -185,11 +328,16 @@ async function send(text) {
   const typing = showTyping();
 
   try {
-    const data = await postJSON(API.chat, { session_id: sessionId, message: text });
+    const data = await postJSON("/api/chat", {
+      conversation_id: conversationId,
+      message: text,
+    });
     typing.remove();
     addMessage("bot", data.message, data.trace);
     renderTrace(data.trace);
     renderCart(data.cart, data.orders);
+    chatTitle.textContent = data.title;
+    await loadChats();
   } catch (error) {
     typing.remove();
     addMessage("error", error.message);
@@ -206,8 +354,7 @@ function setBusy(value) {
 }
 
 function clearWelcome() {
-  const welcome = chatLog.querySelector(".welcome");
-  if (welcome) welcome.remove();
+  chatLog.querySelector(".welcome")?.remove();
 }
 
 function addMessage(kind, text, trace) {
@@ -277,46 +424,53 @@ function inline(text) {
 
 /* ── Tool trace panel ─────────────────────────────────────────────────── */
 
-function renderTrace(trace) {
+function renderTrace(trace, { grouped = false } = {}) {
   if (!trace || !trace.length) return;
-  turnCounter += 1;
 
-  const turn = document.createElement("div");
-  turn.className = "trace-turn";
-  turn.innerHTML = `<div class="trace-turn-head">Turn ${turnCounter} · ${trace.length} call${trace.length > 1 ? "s" : ""}</div>`;
+  // A reloaded conversation arrives as one flat list carrying turn numbers; a
+  // live reply is always a single turn. Group so both render identically.
+  const turns = new Map();
+  for (const call of trace) {
+    const key = grouped ? call.turn ?? 1 : "live";
+    if (!turns.has(key)) turns.set(key, []);
+    turns.get(key).push(call);
+  }
 
-  trace.forEach((call) => {
-    const item = document.createElement("div");
-    item.className = "trace-item";
-    item.innerHTML = `
-      <button class="trace-head" type="button">
-        <span class="trace-status ${call.ok ? "ok" : "fail"}"></span>
-        <span class="trace-name">${esc(call.name)}</span>
-        <span class="trace-time">${call.duration_ms}ms</span>
-        <span class="trace-caret">▶</span>
-      </button>
-      <div class="trace-body">
-        <div class="trace-label">Arguments the model produced</div>
-        <pre class="trace-json">${esc(JSON.stringify(call.arguments, null, 2))}</pre>
-        <div class="trace-label">Result sent back to the model</div>
-        <pre class="trace-json">${esc(JSON.stringify(call.result, null, 2))}</pre>
-      </div>`;
-    item.querySelector(".trace-head")
-      .addEventListener("click", () => item.classList.toggle("is-open"));
-    turn.appendChild(item);
-  });
+  for (const [key, calls] of turns) {
+    const turn = document.createElement("div");
+    turn.className = "trace-turn";
+    const label = grouped ? `Turn ${key}` : "Latest turn";
+    turn.innerHTML = `<div class="trace-turn-head">${label} · ${calls.length} call${calls.length > 1 ? "s" : ""}</div>`;
+    calls.forEach((call) => turn.appendChild(traceItem(call)));
 
-  const placeholder = traceList.querySelector(".empty");
-  if (placeholder) placeholder.remove();
-  traceList.prepend(turn);
+    // Reloaded turns read oldest-first; live turns stack newest on top.
+    if (grouped) traceList.appendChild(turn);
+    else traceList.prepend(turn);
+  }
+}
+
+function traceItem(call) {
+  const item = document.createElement("div");
+  item.className = "trace-item";
+  item.innerHTML = `
+    <button class="trace-head" type="button">
+      <span class="trace-status ${call.ok ? "ok" : "fail"}"></span>
+      <span class="trace-name">${esc(call.name)}</span>
+      <span class="trace-time">${call.duration_ms}ms</span>
+      <span class="trace-caret">▶</span>
+    </button>
+    <div class="trace-body">
+      <div class="trace-label">Arguments the model produced</div>
+      <pre class="trace-json">${esc(JSON.stringify(call.arguments, null, 2))}</pre>
+      <div class="trace-label">Result sent back to the model</div>
+      <pre class="trace-json">${esc(JSON.stringify(call.result, null, 2))}</pre>
+    </div>`;
+  item.querySelector(".trace-head")
+    .addEventListener("click", () => item.classList.toggle("is-open"));
+  return item;
 }
 
 /* ── Cart panel ───────────────────────────────────────────────────────── */
-
-async function refreshCart() {
-  const data = await getJSON(API.cart(sessionId));
-  renderCart(data.cart, data.orders);
-}
 
 function renderCart(cart, orders) {
   cartBadge.textContent = cart.item_count;
@@ -355,27 +509,6 @@ function renderCart(cart, orders) {
     </div>`).join("");
 }
 
-/* ── Reset ────────────────────────────────────────────────────────────── */
-
-async function resetSession() {
-  const data = await postJSON(API.reset, { session_id: sessionId });
-  renderCart(data.cart, data.orders);
-  traceList.innerHTML = "";
-  turnCounter = 0;
-  chatLog.innerHTML = `
-    <div class="welcome">
-      <div class="welcome-icon">🍛</div>
-      <h2>Fresh session</h2>
-      <p>Cart, coupon, orders and chat history are all cleared.</p>
-      <div class="suggestions">
-        <button class="suggestion" type="button">Show me the starters</button>
-        <button class="suggestion" type="button">Something vegan under ₹300</button>
-        <button class="suggestion" type="button">What coupons do you have?</button>
-      </div>
-    </div>`;
-  wireSuggestions();
-}
-
 /* ── Tabs ─────────────────────────────────────────────────────────────── */
 
 function wireTabs() {
@@ -391,7 +524,7 @@ function wireTabs() {
   });
 }
 
-/* ── HTTP helpers ─────────────────────────────────────────────────────── */
+/* ── Helpers ──────────────────────────────────────────────────────────── */
 
 async function getJSON(url) {
   const response = await fetch(url);
@@ -410,13 +543,34 @@ async function postJSON(url, body) {
 }
 
 async function errorText(response) {
-  // FastAPI puts the message in `detail`; fall back to the raw body.
+  // FastAPI puts the message in `detail` — a string, or a list for validation
+  // errors, which is what a rejected email or short password comes back as.
   try {
     const data = await response.json();
-    return data.detail || `Request failed (${response.status})`;
+    if (typeof data.detail === "string") return data.detail;
+    if (Array.isArray(data.detail)) return data.detail[0]?.msg || "Invalid input.";
+    return `Request failed (${response.status})`;
   } catch {
     return `Request failed (${response.status})`;
   }
+}
+
+function show(node, text) {
+  node.textContent = text;
+  node.hidden = false;
+}
+
+function hide(node) {
+  node.hidden = true;
+}
+
+function shortDate(iso) {
+  const date = new Date(iso);
+  const today = new Date();
+  const sameDay = date.toDateString() === today.toDateString();
+  return sameDay
+    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : date.toLocaleDateString([], { day: "numeric", month: "short" });
 }
 
 function esc(value) {

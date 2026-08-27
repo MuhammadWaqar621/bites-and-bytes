@@ -26,6 +26,17 @@ ENV_ENDPOINT = "LLM_ENDPOINT_MINI_MODEL"
 ENV_API_KEY = "LLM_ENDPOINT_MINI_MODEL_APIKEY"
 ENV_DEPLOYMENT = "MINI_MODEL_NAME"
 
+#: SQL Server Express over Windows authentication -- no password to leak, and
+#: it is what this project is developed against. Swap the whole URL for
+#: "postgresql+psycopg2://user:pass@localhost/bitesbytes" and nothing else in
+#: the codebase changes.
+DEFAULT_DATABASE_URL = (
+    "mssql+pyodbc://@localhost:1433/BitesBytes"
+    "?driver=ODBC+Driver+18+for+SQL+Server"
+    "&Trusted_Connection=yes"
+    "&TrustServerCertificate=yes"
+)
+
 
 def _env_float(name: str, default: float) -> float:
     """Read a float from the environment, falling back if unset or malformed."""
@@ -54,6 +65,8 @@ class Settings:
     temperature: float
     max_tool_iterations: int
     port: int
+    database_url: str
+    session_days: int
 
     @property
     def missing(self) -> list[str]:
@@ -87,4 +100,6 @@ def get_settings() -> Settings:
         temperature=_env_float("LLM_TEMPERATURE", 0.2),
         max_tool_iterations=_env_int("MAX_TOOL_ITERATIONS", 6),
         port=_env_int("APP_PORT", 8000),
+        database_url=os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL).strip(),
+        session_days=_env_int("SESSION_DAYS", 14),
     )

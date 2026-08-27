@@ -13,104 +13,139 @@
 <body>
   <div class="aurora" aria-hidden="true"></div>
 
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-mark">B&amp;B</span>
-      <div class="brand-text">
-        <h1>Bites &amp; Bytes</h1>
-        <p>Ordering assistant · <span id="tool-count">12</span> tools · Azure OpenAI</p>
-      </div>
-    </div>
-    <div class="topbar-actions">
-      <span id="status-pill" class="pill pill-muted">checking…</span>
-      <button id="reset-btn" class="ghost-btn" type="button" title="Clear cart and chat history">
-        Reset session
-      </button>
-    </div>
-  </header>
-
-  <main class="layout">
-    <!-- ── Left: menu + tool catalogue ─────────────────────────────── -->
-    <aside class="panel panel-left">
-      <div class="tabs" role="tablist">
-        <button class="tab is-active" data-tab="menu" role="tab" type="button">Menu</button>
-        <button class="tab" data-tab="tools" role="tab" type="button">Tools</button>
-      </div>
-
-      <section class="tab-body is-active" data-panel="menu">
-        <div id="category-filters" class="chips"></div>
-        <div id="menu-list" class="menu-list"></div>
-      </section>
-
-      <section class="tab-body" data-panel="tools">
-        <p class="panel-hint">
-          The exact catalogue sent to the model on every request. It never sees
-          the Python — only these names and descriptions.
-        </p>
-        <div id="tool-list" class="tool-list"></div>
-      </section>
-    </aside>
-
-    <!-- ── Centre: the conversation ────────────────────────────────── -->
-    <section class="panel panel-chat">
-      <div id="chat-log" class="chat-log">
-        <div class="welcome">
-          <div class="welcome-icon">🍛</div>
-          <h2>What are you hungry for?</h2>
-          <p>
-            Ask in plain English. The assistant decides which of the
-            <strong>12 tools</strong> to call, in what order — watch the
-            <em>Tool trace</em> panel light up as it works.
-          </p>
-          <div class="suggestions">
-            <button class="suggestion" type="button">I'm vegetarian with a ₹1500 budget — what do you suggest?</button>
-            <button class="suggestion" type="button">Add 2 paneer tikka and a garlic naan</button>
-            <button class="suggestion" type="button">Apply SAVE20 and give me the total for pincode 755001</button>
-            <button class="suggestion" type="button">Is the kitchen open right now?</button>
-          </div>
+  <!-- ══ Auth screen ═══════════════════════════════════════════════════ -->
+  <div id="auth-screen" class="auth-screen">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <span class="brand-mark">B&amp;B</span>
+        <div>
+          <h1>Bites &amp; Bytes</h1>
+          <p>Sign in to order, and to keep your chats and history.</p>
         </div>
       </div>
 
-      <form id="composer" class="composer" autocomplete="off">
-        <input
-          id="message-input"
-          type="text"
-          placeholder="Ask about the menu, build an order, apply a coupon…"
-          maxlength="2000"
-          aria-label="Message"
-        />
-        <button id="send-btn" type="submit" aria-label="Send">
-          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-            <path d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z" fill="currentColor" />
-          </svg>
-        </button>
-      </form>
-    </section>
-
-    <!-- ── Right: cart + tool trace ────────────────────────────────── -->
-    <aside class="panel panel-right">
-      <div class="tabs" role="tablist">
-        <button class="tab is-active" data-tab="cart" role="tab" type="button">
-          Cart <span id="cart-badge" class="badge">0</span>
-        </button>
-        <button class="tab" data-tab="trace" role="tab" type="button">Tool trace</button>
+      <div class="auth-tabs" role="tablist">
+        <button class="auth-tab is-active" data-mode="login" type="button">Sign in</button>
+        <button class="auth-tab" data-mode="register" type="button">Create account</button>
       </div>
 
-      <section class="tab-body is-active" data-panel="cart">
-        <div id="cart-items" class="cart-items"></div>
-        <div id="cart-summary" class="cart-summary"></div>
-        <div id="order-list" class="order-list"></div>
+      <form id="auth-form" autocomplete="on">
+        <label class="field" id="name-field" hidden>
+          <span>Your name</span>
+          <input name="display_name" type="text" maxlength="80" autocomplete="name" />
+        </label>
+
+        <label class="field">
+          <span>Email</span>
+          <input name="email" type="email" required autocomplete="email"
+                 placeholder="you@example.com" />
+        </label>
+
+        <label class="field">
+          <span>Password</span>
+          <input name="password" type="password" required minlength="8"
+                 autocomplete="current-password" placeholder="At least 8 characters" />
+        </label>
+
+        <p id="auth-error" class="auth-error" hidden></p>
+
+        <button id="auth-submit" class="primary-btn" type="submit">Sign in</button>
+      </form>
+
+      <p class="auth-demo">
+        Try the seeded account — <code>demo@bitesbytes.app</code> /
+        <code>demo12345</code> — it already has order history.
+      </p>
+    </div>
+  </div>
+
+  <!-- ══ Application ═══════════════════════════════════════════════════ -->
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">B&amp;B</span>
+        <div class="brand-text">
+          <h1>Bites &amp; Bytes</h1>
+          <p><span id="tool-count">15</span> tools · <span id="dish-count">0</span> dishes · SQL Server</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span id="status-pill" class="pill pill-muted">checking…</span>
+        <span id="user-pill" class="pill pill-user"></span>
+        <button id="logout-btn" class="ghost-btn" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <!-- ── Left: chats, menu, tools ───────────────────────────────── -->
+      <aside class="panel panel-left">
+        <div class="tabs" role="tablist">
+          <button class="tab is-active" data-tab="chats" role="tab" type="button">Chats</button>
+          <button class="tab" data-tab="menu" role="tab" type="button">Menu</button>
+          <button class="tab" data-tab="tools" role="tab" type="button">Tools</button>
+        </div>
+
+        <section class="tab-body is-active" data-panel="chats">
+          <button id="new-chat-btn" class="primary-btn slim" type="button">+ New chat</button>
+          <div id="chat-list" class="chat-list"></div>
+        </section>
+
+        <section class="tab-body" data-panel="menu">
+          <div id="category-filters" class="chips"></div>
+          <div id="menu-list" class="menu-list"></div>
+        </section>
+
+        <section class="tab-body" data-panel="tools">
+          <p class="panel-hint">
+            The exact catalogue sent to the model on every request. It never
+            sees the Python — only these names and descriptions.
+          </p>
+          <div id="tool-list" class="tool-list"></div>
+        </section>
+      </aside>
+
+      <!-- ── Centre: the conversation ───────────────────────────────── -->
+      <section class="panel panel-chat">
+        <div id="chat-title" class="chat-title"></div>
+        <div id="chat-log" class="chat-log"></div>
+
+        <form id="composer" class="composer" autocomplete="off">
+          <input id="message-input" type="text" maxlength="2000" aria-label="Message"
+                 placeholder="Ask about the menu, build an order, apply a coupon…" />
+          <button id="send-btn" type="submit" aria-label="Send">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <path d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z" fill="currentColor" />
+            </svg>
+          </button>
+        </form>
       </section>
 
-      <section class="tab-body" data-panel="trace">
-        <p class="panel-hint">
-          Every function the model asked for, with the arguments it produced and
-          the JSON it got back.
-        </p>
-        <div id="trace-list" class="trace-list"></div>
-      </section>
-    </aside>
-  </main>
+      <!-- ── Right: cart + tool trace ───────────────────────────────── -->
+      <aside class="panel panel-right">
+        <div class="tabs" role="tablist">
+          <button class="tab is-active" data-tab="cart" role="tab" type="button">
+            Cart <span id="cart-badge" class="badge">0</span>
+          </button>
+          <button class="tab" data-tab="trace" role="tab" type="button">Tool trace</button>
+        </div>
+
+        <section class="tab-body is-active" data-panel="cart">
+          <div id="cart-items" class="cart-items"></div>
+          <div id="cart-summary" class="cart-summary"></div>
+          <div id="order-list" class="order-list"></div>
+        </section>
+
+        <section class="tab-body" data-panel="trace">
+          <p class="panel-hint">
+            Every function the model asked for, with the arguments it produced
+            and the JSON it got back. Loaded from <code>tool_invocations</code>,
+            so it survives a refresh.
+          </p>
+          <div id="trace-list" class="trace-list"></div>
+        </section>
+      </aside>
+    </main>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

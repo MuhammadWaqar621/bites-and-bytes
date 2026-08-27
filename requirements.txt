@@ -1,10 +1,15 @@
 # --- Runtime -------------------------------------------------------------
-fastapi==0.115.6          # HTTP layer for the chat + menu endpoints
-uvicorn[standard]==0.34.0 # ASGI server that actually runs the app
-openai==1.59.6            # Azure OpenAI client (AzureOpenAI lives in this SDK)
-python-dotenv==1.0.1      # loads .env into os.environ at startup
+fastapi==0.115.6           # HTTP layer: auth, conversations, chat
+uvicorn[standard]==0.34.0  # ASGI server that actually runs the app
+openai==1.59.6             # Azure OpenAI client (AzureOpenAI lives in this SDK)
+python-dotenv==1.0.1       # loads .env into os.environ at startup
+email-validator==2.2.0     # backs pydantic's EmailStr on the signup form
+
+# --- Database ------------------------------------------------------------
+SQLAlchemy==2.0.36         # ORM + query layer; keeps the app engine-agnostic
+pyodbc==5.2.0              # SQL Server driver. Swap for psycopg2 on Postgres.
 
 # --- Tests ---------------------------------------------------------------
 # Kept in the same file so `pip install -r requirements.txt` is the only
-# install step anyone has to run. `pytest` then works with no extra setup.
+# install step anyone has to run. Tests hit SQLite, so no server is needed.
 pytest==8.3.4
