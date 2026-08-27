@@ -1,0 +1,5 @@
+# --- Runtime dependencies -------------------------------------------------
+fastapi==0.115.6          # HTTP layer for the chat + menu endpoints
+uvicorn[standard]==0.34.0 # ASGI server that actually runs the app
+openai==1.59.6            # Azure OpenAI client (AzureOpenAI lives in this SDK)
+python-dotenv==1.0.1      # loads .env into os.environ at startup
