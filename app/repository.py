@@ -446,12 +446,32 @@ def get_user_by_email(db: DbSession, email: str) -> User | None:
     return db.scalar(select(User).where(func.lower(User.email) == email.strip().lower()))
 
 
-def create_user(db: DbSession, email: str, display_name: str, password: str) -> User:
-    user = User(email=email.strip().lower(), display_name=display_name.strip(),
-                password_hash=hash_password(password))
+def create_user(db: DbSession, email: str, password: str,
+                display_name: str | None = None, phone: str | None = None,
+                address: str | None = None, pincode: str | None = None) -> User:
+    """Register an account. Only the email and password are required.
+
+    A blank display name falls back to the local part of the email, so the
+    assistant always has something to call the customer.
+    """
+    email = email.strip().lower()
+    user = User(
+        email=email,
+        display_name=(display_name or "").strip() or email.split("@")[0],
+        password_hash=hash_password(password),
+        default_phone=_clean(phone),
+        default_address=_clean(address),
+        default_pincode=_clean(pincode),
+    )
     db.add(user)
     db.flush()
     return user
+
+
+def _clean(value: str | None) -> str | None:
+    """Trim an optional field, turning blank input into a real NULL."""
+    trimmed = (value or "").strip()
+    return trimmed or None
 
 
 def authenticate(db: DbSession, email: str, password: str) -> User | None:

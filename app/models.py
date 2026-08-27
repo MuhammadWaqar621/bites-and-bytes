@@ -110,6 +110,14 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
+    #: Optional delivery details captured at sign-up. All nullable: signing in
+    #: needs an email and a password and nothing else. When they are present,
+    #: `get_my_profile` can offer them on a brand-new account, so the very
+    #: first order does not require typing five fields into the chat.
+    default_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    default_address: Mapped[str | None] = mapped_column(String(250), nullable=True)
+    default_pincode: Mapped[str | None] = mapped_column(String(10), nullable=True)
+
     conversations: Mapped[list["Conversation"]] = relationship(
         back_populates="user", cascade="all, delete-orphan")
     orders: Mapped[list["Order"]] = relationship(back_populates="user")

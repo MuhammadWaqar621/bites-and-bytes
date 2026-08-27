@@ -446,26 +446,40 @@ def get_my_profile(ctx: ToolContext) -> dict[str, Any]:
     address as last time?" instead of asking for five fields again. This is
     what "the app remembers me" actually means in practice.
     """
-    stats = repo.order_stats(ctx.db, ctx.user)
-    latest = repo.latest_order(ctx.db, ctx.user)
-    favourites = repo.favourite_dishes(ctx.db, ctx.user)
+    user = ctx.user
+    stats = repo.order_stats(ctx.db, user)
+    latest = repo.latest_order(ctx.db, user)
+    favourites = repo.favourite_dishes(ctx.db, user)
+
+    # Prefer the last real order; fall back to whatever was typed at sign-up so
+    # a brand-new account still has something to offer. Either way the model
+    # must confirm before ordering with these.
+    if latest is not None:
+        saved = {"name": latest.customer_name, "phone": latest.phone,
+                 "address": latest.address, "pincode": latest.pincode,
+                 "payment_method": latest.payment_method,
+                 "source": "their last order"}
+    elif user.default_phone or user.default_address:
+        saved = {"name": user.display_name, "phone": user.default_phone,
+                 "address": user.default_address, "pincode": user.default_pincode,
+                 "payment_method": None, "source": "their sign-up details"}
+    else:
+        saved = None
 
     return {
         "ok": True,
-        "display_name": ctx.user.display_name,
-        "email": ctx.user.email,
+        "display_name": user.display_name,
+        "email": user.email,
         "currency": CURRENCY,
         **stats,
         "usual_dishes": [{"name": name, "times_ordered": n} for name, n in favourites],
-        # Saved delivery details, so the model can offer to reuse them --
-        # it must still confirm before calling place_order with them.
-        "last_delivery": {
-            "name": latest.customer_name, "phone": latest.phone,
-            "address": latest.address, "pincode": latest.pincode,
-            "payment_method": latest.payment_method,
-        } if latest else None,
+        "saved_delivery": saved,
         "hint": "Offer these saved details for reuse, but confirm with the customer "
-                "before placing an order with them.",
+                "before placing an order with them. Any field that is null must "
+                "still be asked for."
+                if saved else
+                "Nothing is saved for this customer yet -- ask for the delivery "
+                "details normally.",
     }
 
 

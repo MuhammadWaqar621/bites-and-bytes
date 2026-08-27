@@ -252,14 +252,41 @@ def test_profile_offers_the_last_delivery_details(ctx):
 
     profile = tools.get_my_profile(ctx)
     assert profile["order_count"] == 1
-    assert profile["last_delivery"]["address"] == "Flat 4B, Nehru Street"
+    assert profile["saved_delivery"]["address"] == "Flat 4B, Nehru Street"
     assert profile["usual_dishes"][0] == {"name": "Butter Chicken", "times_ordered": 2}
 
 
 def test_profile_of_a_brand_new_customer_has_nothing_saved(ctx):
     profile = tools.get_my_profile(ctx)
     assert profile["order_count"] == 0
-    assert profile["last_delivery"] is None
+    assert profile["saved_delivery"] is None
+    assert "ask for the delivery details" in profile["hint"]
+
+
+def test_optional_signup_details_are_offered_before_any_order(db):
+    """Fields typed at sign-up stand in until there is a real order to learn from."""
+    person = repo.create_user(db, "new@bitesbytes.app", "supersecret9",
+                              display_name="New Customer", phone="9876500000",
+                              address="12 Palm Grove", pincode="755002")
+    conversation = repo.create_conversation(db, person, "First chat")
+    db.commit()
+
+    profile = tools.get_my_profile(tools.ToolContext(db, person, conversation))
+    assert profile["saved_delivery"]["address"] == "12 Palm Grove"
+    assert profile["saved_delivery"]["source"] == "their sign-up details"
+    # Never invented: no order has been placed, so there is no payment method.
+    assert profile["saved_delivery"]["payment_method"] is None
+
+
+def test_blank_signup_fields_are_stored_as_null_not_empty_strings(db):
+    person = repo.create_user(db, "blank@bitesbytes.app", "supersecret9",
+                              display_name="  ", phone="  ", address="")
+    db.commit()
+
+    assert person.default_phone is None
+    assert person.default_address is None
+    # A blank name falls back to the local part of the email.
+    assert person.display_name == "blank"
 
 
 def test_one_customer_cannot_read_anothers_order(ctx, other_ctx):

@@ -78,7 +78,8 @@ def db():
 
 @pytest.fixture()
 def user(db):
-    person = repo.create_user(db, "waqar@example.com", "Waqar", "supersecret1")
+    person = repo.create_user(db, "waqar@example.com", "supersecret1",
+                              display_name="Waqar")
     db.commit()
     return person
 
@@ -94,7 +95,8 @@ def ctx(db, user) -> ToolContext:
 @pytest.fixture()
 def other_ctx(db) -> ToolContext:
     """A second, unrelated customer -- used to prove data cannot leak across."""
-    stranger = repo.create_user(db, "stranger@example.com", "Stranger", "supersecret2")
+    stranger = repo.create_user(db, "stranger@example.com", "supersecret2",
+                                display_name="Stranger")
     conversation = repo.create_conversation(db, stranger, "Stranger chat")
     db.commit()
     return ToolContext(db=db, user=stranger, conversation=conversation)

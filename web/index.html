@@ -13,8 +13,11 @@
 <body>
   <div class="aurora" aria-hidden="true"></div>
 
-  <!-- ══ Auth screen ═══════════════════════════════════════════════════ -->
-  <div id="auth-screen" class="auth-screen">
+  <!-- ══ Auth screen ═══════════════════════════════════════════════════
+       Both screens start hidden. `init()` checks /api/auth/me first and
+       reveals exactly one, so a signed-in user never sees the login card
+       flash past on the way to their chats. ═══════════════════════════════ -->
+  <div id="auth-screen" class="auth-screen" hidden>
     <div class="auth-card">
       <div class="auth-brand">
         <span class="brand-mark">B&amp;B</span>
@@ -30,11 +33,7 @@
       </div>
 
       <form id="auth-form" autocomplete="on">
-        <label class="field" id="name-field" hidden>
-          <span>Your name</span>
-          <input name="display_name" type="text" maxlength="80" autocomplete="name" />
-        </label>
-
+        <!-- Signing in needs these two and nothing else. -->
         <label class="field">
           <span>Email</span>
           <input name="email" type="email" required autocomplete="email"
@@ -46,6 +45,39 @@
           <input name="password" type="password" required minlength="8"
                  autocomplete="current-password" placeholder="At least 8 characters" />
         </label>
+
+        <!-- Sign-up only, and every one of them is optional. Filling them in
+             just means the assistant can offer your address on the first
+             order instead of asking for it. -->
+        <div id="optional-fields" hidden>
+          <p class="field-note">
+            Everything below is optional — it only saves you typing later.
+          </p>
+
+          <label class="field">
+            <span>Your name</span>
+            <input name="display_name" type="text" maxlength="80"
+                   autocomplete="name" placeholder="We'll use your email if blank" />
+          </label>
+
+          <label class="field">
+            <span>Phone</span>
+            <input name="phone" type="tel" maxlength="20"
+                   autocomplete="tel" placeholder="10-digit mobile number" />
+          </label>
+
+          <label class="field">
+            <span>Delivery address</span>
+            <input name="address" type="text" maxlength="250"
+                   autocomplete="street-address" placeholder="Flat / house number and street" />
+          </label>
+
+          <label class="field">
+            <span>Pincode</span>
+            <input name="pincode" type="text" maxlength="10"
+                   autocomplete="postal-code" placeholder="6 digits, e.g. 755001" />
+          </label>
+        </div>
 
         <p id="auth-error" class="auth-error" hidden></p>
 

@@ -54,9 +54,19 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 
 class RegisterRequest(BaseModel):
+    """Sign-up. Email and password are the only required fields.
+
+    The rest are conveniences: supplying them lets `get_my_profile` offer
+    delivery details on the very first order instead of asking for five things
+    in the chat. Leaving them blank costs nothing.
+    """
+
     email: EmailStr
-    display_name: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=8, max_length=200)
+    display_name: str | None = Field(default=None, max_length=80)
+    phone: str | None = Field(default=None, max_length=20)
+    address: str | None = Field(default=None, max_length=250)
+    pincode: str | None = Field(default=None, max_length=10)
 
 
 class LoginRequest(BaseModel):
@@ -87,7 +97,10 @@ def register(request: RegisterRequest, response: Response,
     if problem:
         raise HTTPException(422, problem)
 
-    user = repo.create_user(db, request.email, request.display_name, request.password)
+    user = repo.create_user(
+        db, request.email, request.password,
+        display_name=request.display_name, phone=request.phone,
+        address=request.address, pincode=request.pincode)
     token = repo.issue_token(db, user, settings.session_days)
     db.commit()
 

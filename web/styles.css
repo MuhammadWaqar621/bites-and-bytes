@@ -24,6 +24,13 @@
 
 * { box-sizing: border-box; }
 
+/* The `hidden` attribute is how this app gates the login screen against the
+   main shell. A class rule such as `.app { display: flex }` outranks the
+   browser's built-in `[hidden] { display: none }`, so without this line a
+   hidden element keeps rendering -- which let the chat box show before anyone
+   had signed in. */
+[hidden] { display: none !important; }
+
 html, body { height: 100%; }
 
 body {
@@ -129,6 +136,14 @@ body {
 }
 .field input::placeholder { color: var(--faint); }
 .field input:focus { border-color: rgba(255,154,60,.5); background: rgba(255,255,255,.055); }
+
+.field-note {
+  margin: 4px 0 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--stroke-soft);
+  font-size: 11.5px;
+  color: var(--faint);
+}
 
 .primary-btn {
   width: 100%;

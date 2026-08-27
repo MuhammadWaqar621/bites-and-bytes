@@ -18,7 +18,7 @@ const authScreen = el("auth-screen");
 const authForm = el("auth-form");
 const authError = el("auth-error");
 const authSubmit = el("auth-submit");
-const nameField = el("name-field");
+const optionalFields = el("optional-fields");
 
 /* app shell */
 const appShell = el("app");
@@ -64,12 +64,18 @@ async function init() {
   el("logout-btn").addEventListener("click", logout);
   el("new-chat-btn").addEventListener("click", () => startChat());
 
+  let session;
   try {
-    const session = await getJSON("/api/auth/me");
-    await enterApp(session.user);
+    session = await getJSON("/api/auth/me");
   } catch {
     showAuth(); // not signed in — normal on a first visit
+    return;
   }
+
+  // Separate from the check above on purpose: a chat or menu that fails to
+  // load is not the same as "you are not signed in", and must not bounce a
+  // logged-in user back to the login card.
+  await enterApp(session.user);
 }
 
 /* ── Authentication ───────────────────────────────────────────────────── */
@@ -80,8 +86,10 @@ function wireAuth() {
       authMode = tab.dataset.mode;
       document.querySelectorAll(".auth-tab")
         .forEach((t) => t.classList.toggle("is-active", t === tab));
-      nameField.hidden = authMode === "login";
-      nameField.querySelector("input").required = authMode === "register";
+
+      // Signing in asks for email + password only; the extra fields appear
+      // for sign-up and stay optional there.
+      optionalFields.hidden = authMode === "login";
       authForm.password.autocomplete =
         authMode === "login" ? "current-password" : "new-password";
       authSubmit.textContent = authMode === "login" ? "Sign in" : "Create account";
@@ -98,7 +106,14 @@ function wireAuth() {
       email: authForm.email.value.trim(),
       password: authForm.password.value,
     };
-    if (authMode === "register") body.display_name = authForm.display_name.value.trim();
+    if (authMode === "register") {
+      // Send only what was actually filled in — a blank box must stay NULL in
+      // the database, not become an empty string the assistant might quote.
+      for (const name of ["display_name", "phone", "address", "pincode"]) {
+        const value = authForm[name].value.trim();
+        if (value) body[name] = value;
+      }
+    }
 
     try {
       const data = await postJSON(`/api/auth/${authMode}`, body);
@@ -118,13 +133,20 @@ function showAuth() {
 }
 
 async function enterApp(user) {
-  authScreen.hidden = true;
-  appShell.hidden = false;
   userPill.textContent = user.display_name;
 
-  await Promise.all([loadHealth(), loadMenu(), loadTools()]);
-  await loadChats({ openFirst: true });
-  input.focus();
+  try {
+    // Load everything BEFORE revealing the shell, so it never appears as a
+    // set of empty panels that fill in a moment later.
+    await Promise.all([loadHealth(), loadMenu(), loadTools()]);
+    await loadChats({ openFirst: true });
+  } finally {
+    // Reveal even if a panel failed: a signed-in user should get the app and
+    // an error pill, never a blank page.
+    authScreen.hidden = true;
+    appShell.hidden = false;
+    input.focus();
+  }
 }
 
 async function logout() {
