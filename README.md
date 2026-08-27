@@ -61,7 +61,6 @@ which variable is missing.
 ### Tests (no API key, no tokens)
 
 ```bash
-pip install -r requirements-dev.txt
 pytest
 ```
 
@@ -248,6 +247,83 @@ repeat up to MAX_TOOL_ITERATIONS times:
 
 All of it lives in [`app/agent.py`](app/agent.py), heavily commented.
 
+Here is one real turn — `"add two paneer tikka and a garlic naan"` — which
+takes **two** round-trips to Azure and runs **two** tools in between:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor C as Customer
+    participant A as agent.py
+    participant M as Azure<br/>gpt-4o-mini
+    participant T as tools.py
+
+    C->>A: "add two paneer tikka<br/>and a garlic naan"
+
+    rect rgba(255,154,60,0.10)
+    note over A,M: round-trip 1 — the model ASKS
+    A->>M: messages + 12 tool schemas
+    M-->>A: finish_reason: "tool_calls"<br/>[call_a add_to_cart, call_b add_to_cart]
+    end
+
+    note over A: append the assistant message FIRST<br/>(rule 1 — or the next call is a 400)
+
+    rect rgba(61,220,151,0.10)
+    note over A,T: your code ANSWERS
+    A->>T: add_to_cart(dish_name="Paneer Tikka", quantity=2)
+    T-->>A: {ok: true, cart_subtotal: 640.0}
+    A->>T: add_to_cart(dish_name="Garlic Naan", quantity=1)
+    T-->>A: {ok: true, cart_subtotal: 720.0}
+    end
+
+    note over A: append one tool message per call,<br/>each with its own tool_call_id (rule 2)
+
+    rect rgba(255,154,60,0.10)
+    note over A,M: round-trip 2 — the model CONCLUDES
+    A->>M: same messages + both tool results
+    M-->>A: finish_reason: "stop"<br/>"Added 2 × Paneer Tikka and 1 × Garlic Naan."
+    end
+
+    A-->>C: answer + the trace of both calls
+```
+
+The loop exits at step 11 because the reply has **no** `tool_calls`. Had the
+model needed the bill next, it would have asked for `calc_total` instead and
+the whole cycle would repeat — up to `MAX_TOOL_ITERATIONS` times.
+
+### Deciding what happens each iteration
+
+```mermaid
+flowchart TD
+    S(["user message"]) --> CALL["call the model<br/>with messages + tools"]
+    CALL --> Q{"reply has<br/>tool_calls?"}
+
+    Q -- "no" --> DONE(["return the answer"])
+
+    Q -- "yes" --> APP["append the assistant's<br/>tool_calls message"]
+    APP --> RUN["for each call:<br/>json.loads(arguments)<br/>dispatch via TOOL_REGISTRY"]
+
+    RUN --> OK{"did it<br/>work?"}
+    OK -- "yes" --> RES["{ok: true, …}"]
+    OK -- "no" --> ERR["{ok: false, error, hint}<br/><i>never raise</i>"]
+
+    RES --> PAIR["append role:tool<br/>+ matching tool_call_id"]
+    ERR --> PAIR
+
+    PAIR --> GUARD{"iterations<br/>&lt; 6?"}
+    GUARD -- "yes" --> CALL
+    GUARD -- "no" --> BAIL(["graceful fallback message"])
+
+    classDef stop fill:#3ddc9722,stroke:#3ddc97,stroke-width:2px
+    classDef warn fill:#ff6b6b22,stroke:#ff6b6b,stroke-width:2px
+    class DONE stop
+    class ERR,BAIL warn
+```
+
+The red boxes are the two things beginners leave out: a tool that fails
+**returns** instead of raising, and the loop has a hard ceiling so a model that
+never stops calling tools cannot hang the request.
+
 ### What goes over the wire
 
 **Request** — the conversation plus the catalogue, on *every* call:
@@ -358,7 +434,68 @@ model must ask the user first.
 
 ---
 
-## Project layout
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph browser["🖥️  Browser"]
+        UI["index.html · app.js · styles.css<br/><i>chat · menu · cart · tool trace</i>"]
+    end
+
+    subgraph server["⚙️  FastAPI server"]
+        direction TB
+        SRV["server.py<br/><i>routes only, no logic</i>"]
+        AG["agent.py<br/><b>THE LOOP</b>"]
+        TL["tools.py<br/><i>12 plain functions</i>"]
+        SC["schemas.py<br/><i>JSON catalogue</i>"]
+        DT["data.py<br/><i>menu · coupons · zones</i>"]
+        ST["store.py<br/><i>cart · orders · history</i>"]
+        LC["llm_client.py<br/><i>Azure wrapper</i>"]
+        CF["config.py<br/><i>reads .env</i>"]
+    end
+
+    AZ["☁️  Azure OpenAI<br/><b>gpt-4o-mini</b>"]
+
+    UI -- "POST /api/chat<br/>{session_id, message}" --> SRV
+    SRV -- "reply + tool trace + cart" --> UI
+
+    SRV --> AG
+    AG -- "messages + tools" --> LC
+    LC -- "chat.completions.create" --> AZ
+    AZ -- "tool_calls  ·  or an answer" --> LC
+    LC --> AG
+
+    AG -- "dispatch by name" --> TL
+    TL -- "ok / error JSON" --> AG
+    AG -. "sends, never exposes" .-> SC
+    SC -. "described to" .-> AZ
+
+    TL --> DT
+    TL --> ST
+    CF --> LC
+
+    classDef hot fill:#ff9a3c22,stroke:#ff9a3c,stroke-width:2px
+    classDef cloud fill:#3ddc9722,stroke:#3ddc97,stroke-width:2px
+    class AG,SC hot
+    class AZ cloud
+```
+
+The two highlighted boxes are the ones that matter. **`agent.py`** is the only
+place that knows about the loop, and **`schemas.py`** is the only thing the
+model ever sees of your code — it never sees `tools.py` at all.
+
+Dependency direction is strictly one-way:
+
+```
+server.py  →  agent.py  →  tools.py  →  data.py / store.py
+                  ↓
+            llm_client.py  →  Azure
+```
+
+Nothing in `tools.py` imports the LLM, which is why the whole business layer is
+testable in under a second with no network.
+
+### File map
 
 ```
 tool_learing/
@@ -380,10 +517,6 @@ tool_learing/
     ├── test_tools.py       business logic, no network
     └── test_agent.py       the loop, driven by a scripted fake model
 ```
-
-The dependency direction is one-way: `server → agent → tools → data/store`.
-Nothing in `tools.py` imports the LLM, which is why the whole business layer is
-testable in under a second.
 
 ### API
 
