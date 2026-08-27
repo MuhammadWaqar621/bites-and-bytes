@@ -303,6 +303,131 @@ def test_one_customer_cannot_read_anothers_order(ctx, other_ctx):
     assert tools.find_past_orders(other_ctx)["count"] == 0
 
 
+# --- analytics -------------------------------------------------------------
+
+def test_spend_summary_counts_only_this_period(ctx):
+    from app.models import Order
+
+    tools.add_to_cart(ctx, dish_name="Butter Chicken")   # 480
+    _place(ctx)
+    tools.add_to_cart(ctx, dish_name="Masala Chai")      # 60
+    old = _place(ctx)["order"]["order_id"]
+
+    # Push the second order back two months.
+    repo.get_order(ctx.db, ctx.user, old).placed_at -= timedelta(days=62)
+    ctx.db.commit()
+
+    month = tools.get_spend_summary(ctx, period="this_month")
+    assert month["order_count"] == 1
+    assert month["total_spend"] == pytest.approx(553.0)   # 480 + 29 + 20 + 24
+
+    everything = tools.get_spend_summary(ctx, period="all_time")
+    assert everything["order_count"] == 2
+
+
+def test_spend_summary_excludes_cancelled_orders(ctx):
+    tools.add_to_cart(ctx, dish_name="Butter Chicken")
+    order_id = _place(ctx)["order"]["order_id"]
+    tools.cancel_order(ctx, order_id=order_id)
+
+    summary = tools.get_spend_summary(ctx, period="all_time")
+    assert summary["order_count"] == 0
+    assert summary["total_spend"] == 0.0
+    assert summary["cancelled_count"] == 1
+
+
+def test_spend_summary_rejects_an_unknown_period(ctx):
+    result = tools.get_spend_summary(ctx, period="last_fortnight")
+    assert result["ok"] is False
+    assert "this_month" in result["hint"]
+
+
+def test_summary_returns_stat_tiles_not_a_chart(ctx):
+    # A handful of headline numbers is a KPI row; a one-bar bar chart would be
+    # slower to read and says nothing extra.
+    chart = tools.get_spend_summary(ctx, period="all_time")["charts"][0]
+    assert chart["kind"] == "kpi"
+    assert [tile["label"] for tile in chart["tiles"]][:2] == ["Total spend", "Orders"]
+
+
+def test_order_trend_buckets_by_month_and_ends_with_this_one(ctx):
+    tools.add_to_cart(ctx, dish_name="Veg Dum Biryani")
+    _place(ctx)
+
+    trend = tools.get_order_trend(ctx, group_by="month", periods=3)
+    assert len(trend["series"]) == 3
+    assert trend["series"][-1]["orders"] == 1      # this month
+    assert trend["series"][0]["orders"] == 0       # two months ago
+    assert trend["total_orders"] == 1
+
+
+def test_order_trend_never_puts_two_units_on_one_chart(ctx):
+    """Spend and order counts are different units, so they get separate charts.
+
+    A dual-axis chart is the single most misread form there is; this tool is
+    built so it cannot produce one.
+    """
+    charts = tools.get_order_trend(ctx, group_by="week", periods=4)["charts"]
+    assert len(charts) == 2
+    assert {c["measure"] for c in charts} == {"spend", "orders"}
+    assert all(c["kind"] == "line" for c in charts)
+
+
+def test_order_trend_clamps_a_silly_bucket_count(ctx):
+    assert len(tools.get_order_trend(ctx, group_by="day", periods=999)["series"]) == 24
+    assert len(tools.get_order_trend(ctx, group_by="day", periods=1)["series"]) == 2
+
+
+def test_order_trend_rejects_unknown_granularity(ctx):
+    assert tools.get_order_trend(ctx, group_by="hour")["ok"] is False
+
+
+def test_spend_breakdown_ranks_categories_by_money(ctx):
+    tools.add_to_cart(ctx, dish_name="Rogan Josh", quantity=2)   # Mains, 1040
+    tools.add_to_cart(ctx, dish_name="Garlic Naan")              # Breads, 80
+    _place(ctx)
+
+    result = tools.get_spend_breakdown(ctx, dimension="category")
+    names = [row["name"] for row in result["rows"]]
+    assert names[0] == "Mains"
+    assert "Breads" in names
+
+    chart = result["charts"][0]
+    assert chart["kind"] == "bar"
+    assert chart["points"][0]["value"] > chart["points"][1]["value"]
+
+
+def test_spend_breakdown_by_dish_and_payment_method(ctx):
+    tools.add_to_cart(ctx, dish_name="Butter Chicken", quantity=3)
+    _place(ctx, payment_method="wallet")
+
+    by_dish = tools.get_spend_breakdown(ctx, dimension="dish")
+    assert by_dish["rows"][0]["name"] == "Butter Chicken"
+    assert by_dish["rows"][0]["units"] == 3
+
+    by_payment = tools.get_spend_breakdown(ctx, dimension="payment_method")
+    assert by_payment["rows"][0]["name"] == "wallet"
+
+
+def test_spend_breakdown_with_no_orders_says_so(ctx):
+    result = tools.get_spend_breakdown(ctx, dimension="category")
+    assert result["ok"] is True and result["rows"] == []
+    assert "nothing to break down" in result["note"]
+
+
+def test_spend_breakdown_rejects_an_unknown_dimension(ctx):
+    assert tools.get_spend_breakdown(ctx, dimension="colour")["ok"] is False
+
+
+def test_analytics_are_scoped_to_the_signed_in_customer(ctx, other_ctx):
+    tools.add_to_cart(ctx, dish_name="Rogan Josh", quantity=2)
+    _place(ctx)
+
+    assert tools.get_spend_summary(other_ctx, period="all_time")["total_spend"] == 0.0
+    assert tools.get_order_trend(other_ctx, group_by="month")["total_orders"] == 0
+    assert tools.get_spend_breakdown(other_ctx, dimension="category")["rows"] == []
+
+
 # --- grounding -------------------------------------------------------------
 
 def test_current_time_reports_kitchen_hours(ctx):

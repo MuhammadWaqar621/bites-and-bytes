@@ -596,6 +596,96 @@ body {
 .tool-chip.is-failed { border-color: rgba(255,107,107,.3); background: rgba(255,107,107,.09); color: #ffb3b3; }
 .tool-chip .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 
+/* ── Charts ──────────────────────────────────────────────────────────────
+   Drawn under an assistant reply when an analytics tool returns chart specs.
+   The surface below is the one the palette was validated against — changing
+   it means re-running scripts/validate_palette.js. */
+
+.chart {
+  --chart-surface: #141722;
+  margin: 10px 0 0;
+  padding: 12px 14px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--stroke);
+  background: var(--chart-surface);
+  max-width: 560px;
+  animation: rise .28s ease both;
+}
+
+.chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.chart-title { font-size: 12px; font-weight: 600; color: var(--text); }
+
+.chart-toggle {
+  padding: 3px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--stroke);
+  background: rgba(255,255,255,.03);
+  color: var(--faint);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.chart-toggle:hover { color: var(--text); border-color: rgba(255,255,255,.2); }
+
+.chart-plot { position: relative; }
+.chart-svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+/* Marks get a generous hit target — a 4px dot is otherwise unhoverable. */
+.chart-dot, .chart-bar { cursor: pointer; transition: opacity .12s; }
+.chart-dot { r: 4; }
+.chart-dot:hover, .chart-bar:hover { opacity: .8; }
+
+.chart-tip {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  padding: 5px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--stroke);
+  background: #1c2130;
+  color: var(--text);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 6px 18px rgba(0,0,0,.45);
+  z-index: 2;
+}
+.chart-tip strong { display: block; color: var(--muted); font-weight: 600; font-size: 10px; }
+
+/* KPI row — headline numbers, not a one-bar chart. */
+.kpi-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.kpi {
+  flex: 1 1 110px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--stroke-soft);
+  background: rgba(255,255,255,.025);
+}
+.kpi-value {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.kpi-label { margin-top: 2px; font-size: 10.5px; color: var(--faint); }
+
+.chart-table table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.chart-table th, .chart-table td { padding: 6px 8px; text-align: left; }
+.chart-table th { font-weight: 500; color: var(--muted); }
+.chart-table td { text-align: right; font-weight: 600; color: var(--text); }
+.chart-table tr + tr th, .chart-table tr + tr td { border-top: 1px solid var(--stroke-soft); }
+
+.chart-empty { margin: 0; padding: 18px 0; text-align: center; font-size: 11.5px; color: var(--faint); }
+
 /* Typing indicator */
 .typing { display: flex; gap: 4px; padding: 14px 16px; }
 .typing span {

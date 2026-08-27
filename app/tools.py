@@ -22,8 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
-from decimal import Decimal
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session as DbSession
@@ -483,6 +482,228 @@ def get_my_profile(ctx: ToolContext) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Analytics
+# ---------------------------------------------------------------------------
+# These three tools attach a `charts` list to their result. The web UI renders
+# each entry as an SVG chart under the assistant's reply; a client that ignores
+# the key still gets every number in the JSON, so the chart is an enhancement
+# and never the only copy of the answer.
+
+#: Windows `get_spend_summary` and `get_spend_breakdown` accept.
+PERIODS = ["today", "yesterday", "this_week", "last_week",
+           "this_month", "last_month", "this_year", "all_time"]
+
+#: Buckets `get_order_trend` accepts, with a sensible default span for each.
+TREND_GRANULARITY = {"day": 14, "week": 8, "month": 6}
+
+
+def _chart(kind: str, title: str, measure: str,
+           points: list[dict] | None = None,
+           tiles: list[dict] | None = None) -> dict[str, Any]:
+    """One chart spec.
+
+    `measure` decides the colour: the UI paints spend blue and order counts
+    orange, consistently everywhere, so colour follows the *quantity* rather
+    than a chart's position on screen.
+    """
+    spec: dict[str, Any] = {"kind": kind, "title": title, "measure": measure,
+                            "currency": CURRENCY}
+    if points is not None:
+        spec["points"] = points
+    if tiles is not None:
+        spec["tiles"] = tiles
+    return spec
+
+
+def _local_now() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _to_utc_naive(moment: datetime) -> datetime:
+    """Local wall-clock time -> the naive UTC the database stores."""
+    return moment.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _add_months(moment: datetime, months: int) -> datetime:
+    """Shift by whole months, clamping to the 1st (all callers want month starts)."""
+    total = moment.year * 12 + (moment.month - 1) + months
+    return moment.replace(year=total // 12, month=total % 12 + 1, day=1)
+
+
+def _period_window(period: str) -> tuple[datetime | None, datetime | None, str]:
+    """Resolve a named period into ``(start, end, label)`` in local time.
+
+    Boundaries are local midnights, not UTC ones: a customer asking what they
+    spent "today" means their today, and the database stores UTC.
+    """
+    now = _local_now()
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = midnight - timedelta(days=midnight.weekday())   # Monday
+    month_start = midnight.replace(day=1)
+
+    windows = {
+        "today": (midnight, midnight + timedelta(days=1), "today"),
+        "yesterday": (midnight - timedelta(days=1), midnight, "yesterday"),
+        "this_week": (week_start, week_start + timedelta(days=7), "this week"),
+        "last_week": (week_start - timedelta(days=7), week_start, "last week"),
+        "this_month": (month_start, _add_months(month_start, 1),
+                       month_start.strftime("%B %Y")),
+        "last_month": (_add_months(month_start, -1), month_start,
+                       _add_months(month_start, -1).strftime("%B %Y")),
+        "this_year": (midnight.replace(month=1, day=1),
+                      midnight.replace(month=1, day=1).replace(year=now.year + 1),
+                      str(now.year)),
+        "all_time": (None, None, "all time"),
+    }
+    return windows[period]
+
+
+def _trend_buckets(group_by: str, count: int) -> list[tuple[datetime, datetime, str]]:
+    """The last `count` buckets, oldest first, ending with the current one."""
+    now = _local_now()
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    buckets = []
+
+    if group_by == "day":
+        for offset in range(count - 1, -1, -1):
+            start = midnight - timedelta(days=offset)
+            buckets.append((start, start + timedelta(days=1), start.strftime("%d %b")))
+    elif group_by == "week":
+        week_start = midnight - timedelta(days=midnight.weekday())
+        for offset in range(count - 1, -1, -1):
+            start = week_start - timedelta(weeks=offset)
+            buckets.append((start, start + timedelta(days=7),
+                            "w/c " + start.strftime("%d %b")))
+    else:  # month
+        month_start = midnight.replace(day=1)
+        for offset in range(count - 1, -1, -1):
+            start = _add_months(month_start, -offset)
+            buckets.append((start, _add_months(start, 1), start.strftime("%b %Y")))
+
+    return buckets
+
+
+def get_spend_summary(ctx: ToolContext, period: str = "this_month") -> dict[str, Any]:
+    """Tool 16 -- headline numbers for one window, as stat tiles.
+
+    Four numbers are not a chart: the UI renders these as a KPI row, which the
+    reader takes in faster than any bar could be read.
+    """
+    if period not in PERIODS:
+        return {"ok": False, "error": f"Unknown period '{period}'.",
+                "hint": "period must be one of: " + ", ".join(PERIODS)}
+
+    start, end, label = _period_window(period)
+    stats = repo.spend_stats(
+        ctx.db, ctx.user,
+        since=_to_utc_naive(start) if start else None,
+        until=_to_utc_naive(end) if end else None)
+
+    tiles = [
+        {"label": "Total spend", "value": stats["total_spend"], "format": "money"},
+        {"label": "Orders", "value": stats["order_count"], "format": "count"},
+        {"label": "Average order", "value": stats["average_order_value"],
+         "format": "money"},
+    ]
+    if stats["cancelled_count"]:
+        tiles.append({"label": "Cancelled", "value": stats["cancelled_count"],
+                      "format": "count"})
+
+    return {
+        "ok": True, "period": period, "period_label": label, "currency": CURRENCY,
+        **stats,
+        "note": "Cancelled orders are excluded from the spend figures.",
+        "charts": [_chart("kpi", f"Your spending, {label}", "spend", tiles=tiles)],
+    }
+
+
+def get_order_trend(ctx: ToolContext, group_by: str = "month",
+                    periods: int | None = None) -> dict[str, Any]:
+    """Tool 17 -- a time series, for "per month" and "over the last N weeks".
+
+    Returns spend and order count as **two separate charts**. Putting two
+    different units on one pair of y-axes is the single most misread chart
+    there is, so this tool refuses to offer it.
+    """
+    if group_by not in TREND_GRANULARITY:
+        return {"ok": False, "error": f"Unknown group_by '{group_by}'.",
+                "hint": "group_by must be one of: day, week, month."}
+
+    count = int(periods or TREND_GRANULARITY[group_by])
+    count = max(2, min(count, 24))
+
+    buckets = _trend_buckets(group_by, count)
+    orders = repo.orders_in_window(
+        ctx.db, ctx.user,
+        since=_to_utc_naive(buckets[0][0]), until=_to_utc_naive(buckets[-1][1]))
+
+    series = []
+    for start, end, label in buckets:
+        window_start, window_end = _to_utc_naive(start), _to_utc_naive(end)
+        # placed_at came back tz-aware UTC; compare like with like.
+        in_bucket = [total for placed_at, total in orders
+                     if window_start <= placed_at.replace(tzinfo=None) < window_end]
+        series.append({"label": label, "orders": len(in_bucket),
+                       "spend": round(sum(in_bucket), 2)})
+
+    return {
+        "ok": True,
+        "group_by": group_by,
+        "buckets": count,
+        "currency": CURRENCY,
+        "series": series,
+        "total_spend": round(sum(row["spend"] for row in series), 2),
+        "total_orders": sum(row["orders"] for row in series),
+        "charts": [
+            _chart("line", f"Spend per {group_by}", "spend",
+                   points=[{"label": r["label"], "value": r["spend"]} for r in series]),
+            _chart("line", f"Orders per {group_by}", "orders",
+                   points=[{"label": r["label"], "value": r["orders"]} for r in series]),
+        ],
+    }
+
+
+def get_spend_breakdown(ctx: ToolContext, dimension: str = "category",
+                        period: str = "all_time", limit: int = 8) -> dict[str, Any]:
+    """Tool 18 -- where the money went, as a ranked bar chart."""
+    if period not in PERIODS:
+        return {"ok": False, "error": f"Unknown period '{period}'.",
+                "hint": "period must be one of: " + ", ".join(PERIODS)}
+
+    lookup = {
+        "category": repo.spend_by_category,
+        "dish": repo.spend_by_dish,
+        "payment_method": repo.spend_by_payment_method,
+    }
+    if dimension not in lookup:
+        return {"ok": False, "error": f"Unknown dimension '{dimension}'.",
+                "hint": "dimension must be one of: " + ", ".join(lookup)}
+
+    limit = max(3, min(int(limit or 8), 15))
+    start, _end, label = _period_window(period)
+    rows = lookup[dimension](ctx.db, ctx.user,
+                             _to_utc_naive(start) if start else None, limit)
+
+    if not rows:
+        return {"ok": True, "dimension": dimension, "period_label": label,
+                "rows": [], "note": f"No orders {label}, so there is nothing to break down."}
+
+    unit = "orders" if dimension == "payment_method" else "units"
+    return {
+        "ok": True,
+        "dimension": dimension,
+        "period": period,
+        "period_label": label,
+        "currency": CURRENCY,
+        "rows": [{"name": name, "spend": spend, unit: n} for name, spend, n in rows],
+        "charts": [
+            _chart("bar", f"Spend by {dimension.replace('_', ' ')}, {label}", "spend",
+                   points=[{"label": name, "value": spend} for name, spend, _ in rows]),
+        ],
+    }
+
+
 def get_current_time(ctx: ToolContext) -> dict[str, Any]:
     """Tool 15 -- grounding. A language model has no clock of its own."""
     now = datetime.now().astimezone()
@@ -515,5 +736,8 @@ TOOL_REGISTRY: dict[str, ToolFn] = {
     "cancel_order": cancel_order,
     "find_past_orders": find_past_orders,
     "get_my_profile": get_my_profile,
+    "get_spend_summary": get_spend_summary,
+    "get_order_trend": get_order_trend,
+    "get_spend_breakdown": get_spend_breakdown,
     "get_current_time": get_current_time,
 }

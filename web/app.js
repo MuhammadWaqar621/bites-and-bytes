@@ -50,6 +50,8 @@ const SUGGESTIONS = [
   "What do you recommend?",
   "Something vegan under ₹300",
   "What did I order last time?",
+  "How much did I spend this month?",
+  "Show my orders per month",
   "Is the kitchen open right now?",
 ];
 
@@ -296,7 +298,18 @@ async function openChat(id) {
 
   if (data.messages.length) {
     chatLog.innerHTML = "";
-    data.messages.forEach((m) => addMessage(m.role === "user" ? "user" : "bot", m.content));
+    // A turn is numbered by how many user messages preceded it, so the stored
+    // charts line back up with the reply they belong to on a repaint.
+    let turn = 0;
+    data.messages.forEach((m) => {
+      if (m.role === "user") {
+        turn += 1;
+        addMessage("user", m.content);
+        return;
+      }
+      const calls = data.trace.filter((call) => call.turn === turn);
+      addMessage("bot", m.content, calls);
+    });
   } else {
     chatLog.innerHTML = welcomeHtml();
     wireSuggestions();
@@ -316,7 +329,7 @@ function welcomeHtml() {
       <h2>What are you hungry for?</h2>
       <p>
         Ask in plain English. The assistant decides which of the
-        <strong>15 tools</strong> to call — watch the <em>Tool trace</em>
+        <strong>18 tools</strong> to call — watch the <em>Tool trace</em>
         panel as it works.
       </p>
       <div class="suggestions">
@@ -356,7 +369,7 @@ async function send(text) {
     });
     typing.remove();
     addMessage("bot", data.message, data.trace);
-    renderTrace(data.trace);
+    renderTrace(data.trace, { turn: data.turn });
     renderCart(data.cart, data.orders);
     chatTitle.textContent = data.title;
     await loadChats();
@@ -387,6 +400,10 @@ function addMessage(kind, text, trace) {
   bubble.className = "bubble";
   bubble.innerHTML = format(text);
   wrap.appendChild(bubble);
+
+  // Any analytics tool in this turn carries chart specs; draw them under the
+  // reply. The numbers are in the text too — the chart is an enhancement.
+  if (trace && trace.length) renderCharts(wrap, trace);
 
   // Show which tools produced this answer, right under the answer itself.
   if (trace && trace.length) {
@@ -446,14 +463,14 @@ function inline(text) {
 
 /* ── Tool trace panel ─────────────────────────────────────────────────── */
 
-function renderTrace(trace, { grouped = false } = {}) {
+function renderTrace(trace, { grouped = false, turn = null } = {}) {
   if (!trace || !trace.length) return;
 
   // A reloaded conversation arrives as one flat list carrying turn numbers; a
   // live reply is always a single turn. Group so both render identically.
   const turns = new Map();
   for (const call of trace) {
-    const key = grouped ? call.turn ?? 1 : "live";
+    const key = grouped ? call.turn ?? 1 : turn ?? "live";
     if (!turns.has(key)) turns.set(key, []);
     turns.get(key).push(call);
   }
@@ -461,7 +478,7 @@ function renderTrace(trace, { grouped = false } = {}) {
   for (const [key, calls] of turns) {
     const turn = document.createElement("div");
     turn.className = "trace-turn";
-    const label = grouped ? `Turn ${key}` : "Latest turn";
+    const label = typeof key === "number" ? `Turn ${key}` : "Latest turn";
     turn.innerHTML = `<div class="trace-turn-head">${label} · ${calls.length} call${calls.length > 1 ? "s" : ""}</div>`;
     calls.forEach((call) => turn.appendChild(traceItem(call)));
 

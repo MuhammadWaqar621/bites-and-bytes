@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.data import CATEGORIES, PAYMENT_METHODS
+from app.tools import PERIODS
 
 
 def _fn(name: str, description: str, properties: dict[str, Any],
@@ -205,6 +206,66 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "or 'where is my order?' when no id was given.",
         {"limit": {"type": "integer", "minimum": 1, "maximum": 10,
                    "description": "How many past orders to return. Defaults to 5."}},
+    ),
+
+    # --- analytics --------------------------------------------------------
+    _fn(
+        "get_spend_summary",
+        "How much this customer spent and how many orders they placed over one "
+        "period. Use it for 'what did I spend today', 'how much last week', "
+        "'my total this month'. Never add up find_past_orders yourself -- this "
+        "tool counts every order, not just the recent page. The reply is "
+        "rendered as stat tiles automatically, so state the headline figure in "
+        "one sentence rather than reading every number aloud.",
+        {
+            "period": {
+                "type": "string",
+                "enum": PERIODS,
+                "description": "Which window to measure. Defaults to this_month.",
+            }
+        },
+    ),
+    _fn(
+        "get_order_trend",
+        "This customer's spend and order count over consecutive periods -- use "
+        "it for 'orders per month', 'spending over the last few weeks', "
+        "'is my spending going up'. Returns two charts (spend, and order "
+        "count) which the UI draws automatically. Describe the shape of the "
+        "trend in a sentence; do not list every bucket.",
+        {
+            "group_by": {
+                "type": "string",
+                "enum": ["day", "week", "month"],
+                "description": "Bucket size. Defaults to month.",
+            },
+            "periods": {
+                "type": "integer", "minimum": 2, "maximum": 24,
+                "description": "How many buckets, ending with the current one. "
+                               "Defaults to 14 days, 8 weeks or 6 months.",
+            },
+        },
+    ),
+    _fn(
+        "get_spend_breakdown",
+        "Where this customer's money went, ranked -- by menu category, by dish, "
+        "or by payment method. Use it for 'what do I spend most on', 'which "
+        "dishes do I buy', 'how do I usually pay'. Rendered as a bar chart.",
+        {
+            "dimension": {
+                "type": "string",
+                "enum": ["category", "dish", "payment_method"],
+                "description": "What to group the spending by. Defaults to category.",
+            },
+            "period": {
+                "type": "string",
+                "enum": PERIODS,
+                "description": "Window to measure. Defaults to all_time.",
+            },
+            "limit": {
+                "type": "integer", "minimum": 3, "maximum": 15,
+                "description": "How many rows to return. Defaults to 8.",
+            },
+        },
     ),
 
     # --- memory and grounding --------------------------------------------

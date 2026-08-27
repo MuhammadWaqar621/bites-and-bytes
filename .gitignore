@@ -14,3 +14,6 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Screenshot tooling is dev-only (playwright + chromium are large)
+# but the generated images ARE committed — the README links to them.

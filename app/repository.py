@@ -431,6 +431,111 @@ def favourite_dishes(db: DbSession, user: User, limit: int = 5) -> list[tuple[st
     return [(name, int(n)) for name, n in db.execute(stmt)]
 
 
+# ---------------------------------------------------------------------------
+# Analytics
+# ---------------------------------------------------------------------------
+
+def spend_stats(db: DbSession, user: User, since: datetime | None = None,
+                until: datetime | None = None) -> dict[str, Any]:
+    """Order count, total spend and average order value over a window.
+
+    Cancelled orders are excluded from the money but counted separately -- a
+    customer asking "what did I spend this month" does not mean "including the
+    order I cancelled".
+    """
+    live = [Order.user_id == user.id, Order.cancelled_at.is_(None)]
+    every = [Order.user_id == user.id]
+    if since is not None:
+        live.append(Order.placed_at >= since)
+        every.append(Order.placed_at >= since)
+    if until is not None:
+        live.append(Order.placed_at < until)
+        every.append(Order.placed_at < until)
+
+    count, total = db.execute(
+        select(func.count(Order.id), func.coalesce(func.sum(Order.total), 0))
+        .where(*live)).one()
+    cancelled = db.scalar(
+        select(func.count(Order.id)).where(*every, Order.cancelled_at.is_not(None)))
+
+    count = int(count)
+    return {
+        "order_count": count,
+        "total_spend": money(total),
+        "average_order_value": money(float(total) / count) if count else 0.0,
+        "cancelled_count": int(cancelled or 0),
+    }
+
+
+def orders_in_window(db: DbSession, user: User, since: datetime,
+                     until: datetime) -> list[tuple[datetime, float]]:
+    """``(placed_at, total)`` for every live order in the window.
+
+    Bucketing into days/weeks/months happens in Python rather than SQL because
+    the date functions differ per engine (`FORMAT` on SQL Server, `strftime` on
+    SQLite, `date_trunc` on Postgres) and this project is meant to run on all
+    three unchanged. The row count is bounded -- it is one customer's orders
+    over a bounded window, and `ix_orders_user_placed` covers the lookup.
+    """
+    rows = db.execute(
+        select(Order.placed_at, Order.total)
+        .where(Order.user_id == user.id, Order.cancelled_at.is_(None),
+               Order.placed_at >= since, Order.placed_at < until)
+        .order_by(Order.placed_at)).all()
+    return [(_aware(placed_at), money(total)) for placed_at, total in rows]
+
+
+def spend_by_category(db: DbSession, user: User, since: datetime | None,
+                      limit: int) -> list[tuple[str, float, int]]:
+    """Spend grouped by menu section -- a plain SQL GROUP BY, portable as-is."""
+    where = [Order.user_id == user.id, Order.cancelled_at.is_(None)]
+    if since is not None:
+        where.append(Order.placed_at >= since)
+
+    stmt = (select(Dish.category,
+                   func.sum(OrderItem.unit_price * OrderItem.quantity),
+                   func.sum(OrderItem.quantity))
+            .select_from(OrderItem)
+            .join(Order, OrderItem.order_id == Order.id)
+            .join(Dish, OrderItem.dish_id == Dish.id)
+            .where(*where)
+            .group_by(Dish.category)
+            .order_by(func.sum(OrderItem.unit_price * OrderItem.quantity).desc())
+            .limit(limit))
+    return [(name, money(spend), int(units)) for name, spend, units in db.execute(stmt)]
+
+
+def spend_by_dish(db: DbSession, user: User, since: datetime | None,
+                  limit: int) -> list[tuple[str, float, int]]:
+    where = [Order.user_id == user.id, Order.cancelled_at.is_(None)]
+    if since is not None:
+        where.append(Order.placed_at >= since)
+
+    stmt = (select(OrderItem.dish_name,
+                   func.sum(OrderItem.unit_price * OrderItem.quantity),
+                   func.sum(OrderItem.quantity))
+            .join(Order, OrderItem.order_id == Order.id)
+            .where(*where)
+            .group_by(OrderItem.dish_name)
+            .order_by(func.sum(OrderItem.unit_price * OrderItem.quantity).desc())
+            .limit(limit))
+    return [(name, money(spend), int(units)) for name, spend, units in db.execute(stmt)]
+
+
+def spend_by_payment_method(db: DbSession, user: User, since: datetime | None,
+                            limit: int) -> list[tuple[str, float, int]]:
+    where = [Order.user_id == user.id, Order.cancelled_at.is_(None)]
+    if since is not None:
+        where.append(Order.placed_at >= since)
+
+    stmt = (select(Order.payment_method, func.sum(Order.total), func.count(Order.id))
+            .where(*where)
+            .group_by(Order.payment_method)
+            .order_by(func.sum(Order.total).desc())
+            .limit(limit))
+    return [(name, money(spend), int(n)) for name, spend, n in db.execute(stmt)]
+
+
 def order_stats(db: DbSession, user: User) -> dict[str, Any]:
     row = db.execute(
         select(func.count(Order.id), func.coalesce(func.sum(Order.total), 0))
@@ -639,6 +744,15 @@ def list_invocations(db: DbSession, conversation_id: int,
 
 
 def next_turn(db: DbSession, conversation_id: int) -> int:
-    highest = db.scalar(select(func.max(ToolInvocation.turn))
-                        .where(ToolInvocation.conversation_id == conversation_id))
-    return int(highest or 0) + 1
+    """Turn number for the exchange now in progress.
+
+    Defined as *how many user messages this conversation has had* -- called
+    after the incoming one is stored, so the first exchange is turn 1. Deriving
+    it from MAX(tool_invocations.turn) instead would skip a number whenever a
+    turn used no tools, and then the UI could not line a stored chart up with
+    the reply it belongs to when repainting the conversation.
+    """
+    return int(db.scalar(
+        select(func.count(ChatMessage.id))
+        .where(ChatMessage.conversation_id == conversation_id,
+               ChatMessage.role == "user")) or 0)

@@ -5,14 +5,14 @@ restaurant, built to demonstrate **LLM function/tool calling** end to end with
 **Azure OpenAI** and **SQL Server**.
 
 The customer signs in, then types plain English. The model decides *which* of
-**15 Python functions** to call, *in what order*, and *with what arguments* —
+**18 Python functions** to call, *in what order*, and *with what arguments* —
 and the app proves it by streaming the whole tool trace into the UI beside the
-chat.
+chat. Ask it what you spent this month and it draws you a chart.
 
 > The one rule the whole project is built around:
-> **the assistant may never state a price, discount, ETA or order id that did
-> not come back from a tool.** That constraint is what separates an agent from
-> a chatbot.
+> **the assistant may never state a price, discount, ETA, total or order id
+> that did not come back from a tool.** That constraint is what separates an
+> agent from a chatbot.
 
 Accounts, chats, carts, orders and the full message transcript all live in the
 database, so a conversation survives a restart, a refresh and a different
@@ -26,9 +26,9 @@ browser — and one customer can never see another's data.
 python run.py
 ```
 
-That creates the database, builds the schema, seeds **~47,700 rows**, and
-starts the web UI at **<http://127.0.0.1:8000>**. Running it again skips
-straight to the server.
+That creates the database, builds the schema, seeds **~47,700 rows**, and starts
+the web UI at **<http://127.0.0.1:8000>**. Running it again skips straight to
+the server.
 
 First time only:
 
@@ -44,16 +44,95 @@ Then fill in `.env` and run `python run.py`.
 ### Sign in
 
 A seeded demo account already has ~2,000 orders of history, which is what makes
-the memory features worth demonstrating:
+the memory and analytics features worth demonstrating:
 
 ```
 demo@bitesbytes.app  /  demo12345
 ```
 
-Or click **Create account** and register your own — a fresh account starts with
-an empty history, which is worth seeing too.
+Or click **Create account**. Sign-in asks for an email and a password; sign-up
+additionally offers name, phone, address and pincode — **all optional**, and
+worth filling in because the assistant will then offer them on your first order
+instead of asking for five things in the chat.
 
-### `.env`
+---
+
+## Screenshots
+
+Every image below is the real app — captured by
+[`scripts/screenshots.py`](scripts/screenshots.py) driving a real browser
+against a real database and the live model. Regenerate them any time with
+`python scripts/screenshots.py` while the server is running.
+
+### The login gate
+
+Nothing but the sign-in card until you are authenticated — no menu, no chat box.
+
+![Login screen](docs/screenshots/01-login.png)
+
+### Create account — two required fields, four optional
+
+![Create account](docs/screenshots/02-create-account.png)
+
+### Asking for a recommendation
+
+`popular_dishes` ranks by units actually sold across 35,170 order lines. Note
+the chip under the reply naming the tool that produced it.
+
+![Recommendations](docs/screenshots/03-chat-recommendations.png)
+
+### An order placed from saved details
+
+A brand-new account, first ever order: `get_my_profile` → `add_to_cart` ×2 →
+`place_order`. The address was never typed into the chat — it came from sign-up.
+
+![Order placed](docs/screenshots/04-order-placed.png)
+
+### The tool trace — the point of the whole project
+
+Every call the model made, expandable to the exact arguments it invented and
+the exact JSON it got back, with latency. Loaded from `tool_invocations`, so it
+survives a refresh.
+
+![Tool trace](docs/screenshots/05-tool-trace.png)
+
+### The tool catalogue the model actually sees
+
+Rendered from the same `TOOL_SCHEMAS` the API sends to Azure, so this panel can
+never drift out of sync with reality. `*` marks a required parameter.
+
+![Tool catalogue](docs/screenshots/06-tool-catalogue.png)
+
+### "How much did I spend this month?"
+
+Four headline numbers are a stat row, not a chart — it reads faster than any bar
+could.
+
+![Spend summary](docs/screenshots/07-spend-summary.png)
+
+### "Show my orders per month"
+
+Two charts, never one with two y-axes. Spend and order counts are different
+units, so mixing them on shared axes would be the single most misread chart
+there is.
+
+![Trend charts](docs/screenshots/08-trend-charts.png)
+
+### "What do I spend the most on?"
+
+Ranked horizontal bars — horizontal because dish and category names are long.
+
+![Breakdown chart](docs/screenshots/09-breakdown-chart.png)
+
+### The live menu
+
+238 dishes straight out of SQL Server, with real sales counts.
+
+![Menu panel](docs/screenshots/10-menu-panel.png)
+
+---
+
+## `.env`
 
 ```ini
 # Azure OpenAI
@@ -74,15 +153,15 @@ APP_PORT=8000
 The UI and the menu load fine without Azure credentials — only `/api/chat`
 needs the model, and the status pill in the header names the missing variable.
 
-### Tests — no API key, no server, no tokens
+## Tests — no API key, no server, no tokens
 
 ```bash
 pytest
 ```
 
-**48 tests** covering the business logic and the agent loop. They run against a
-throwaway SQLite file with a scripted fake model, so the riskiest code in the
-project is verified for free in about 15 seconds.
+**63 tests** covering the business logic, authorisation and the agent loop. They
+run against a throwaway SQLite file with a scripted fake model, so the riskiest
+code in the project is verified for free in about 15 seconds.
 
 ---
 
@@ -124,6 +203,9 @@ erDiagram
         int id PK
         string email UK
         string password_hash "PBKDF2-SHA256, salted"
+        string default_phone "nullable — from sign-up"
+        string default_address "nullable"
+        string default_pincode "nullable"
     }
     conversations {
         int id PK
@@ -142,7 +224,7 @@ erDiagram
     }
     tool_invocations {
         int id PK
-        int turn
+        int turn "which exchange"
         string name
         text arguments_json
         text result_json
@@ -165,7 +247,7 @@ erDiagram
     }
 ```
 
-Three design decisions worth explaining at an interview:
+Four design decisions worth explaining at an interview:
 
 1. **`orders` has no `status` column.** Status is derived from `placed_at` and
    `cancelled_at` at read time, so a seeded order from last month reports
@@ -174,11 +256,15 @@ Three design decisions worth explaining at an interview:
 2. **`order_items` copies the dish name and price** rather than joining. An
    order is a historical record: if Butter Chicken goes up next month, today's
    receipt must still say what was charged today.
-3. **Money is `Numeric(10,2)`, never `float`.** A restaurant bill that is off
-   by a hundredth of a rupee looks broken. The repository converts to `float`
-   at the boundary so JSON stays clean.
+3. **Money is `Numeric(10,2)`, never `float`.** A restaurant bill that is off by
+   a hundredth of a rupee looks broken. The repository converts to `float` at
+   the boundary so JSON stays clean.
+4. **A turn is numbered by how many user messages preceded it**, not by
+   `MAX(tool_invocations.turn)+1`. The latter skips a number whenever a turn
+   used no tools, and then the UI cannot line a stored chart back up with the
+   reply it belongs to on a repaint.
 
-### Seeded data — 47,700 rows
+### Seeded data — ~47,700 rows
 
 | Table | Rows |
 |---|---:|
@@ -191,168 +277,15 @@ Three design decisions worth explaining at an interview:
 | **Total** | **~47,700** |
 
 The generator uses a fixed seed, so the same rows come out every time — a demo
-whose "best seller" changes on every rebuild is a demo you cannot write a
-README about. Dishes are composed (10 proteins × 8 starter styles, 8 proteins ×
-10 gravies, three biryani traditions) rather than hand-typed, which is how a
-real Indian menu is built and gives `search_dish` a realistically large
-catalogue to filter.
+whose "best seller" changes on every rebuild is a demo you cannot write a README
+about. Dishes are composed (10 proteins × 8 starter styles, 8 proteins × 10
+gravies, three biryani traditions) rather than hand-typed, which is how a real
+Indian menu is built and gives `search_dish` a realistically large catalogue to
+filter.
 
 ---
 
-## The interface
-
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│  B&B  Bites & Bytes    ● connected · gpt-4o-mini   Demo Customer  [Sign out]│
-├────────────────┬──────────────────────────────────┬───────────────────────┤
-│Chats│Menu│Tools│           the conversation       │ Cart │ Tool trace     │
-│                │                                  │                       │
-│ + New chat     │  ┌─────────────────────────────┐ │  2 × Garlic Naan      │
-│ ▸ Dinner for.. │  │ Added 2 × Garlic Naan…      │ │  1 × Dal Makhani      │
-│ ▸ Vegan under..│  └─────────────────────────────┘ │  ─────────────────    │
-│ ▸ My usual     │   🔧 add_to_cart  🔧 add_to_cart │  Subtotal    ₹480     │
-│                │                                  │                       │
-│ 238 dishes     │  [ type a message…        ] [→]  │  ▸ add_to_cart  6ms   │
-└────────────────┴──────────────────────────────────┴───────────────────────┘
-```
-
-- **Chats** — every conversation you have ever had, loaded from
-  `conversations`. Click one and the messages, the tool trace and the cart all
-  repaint from the database.
-- **Menu / Tools** — the live catalogue, and the exact JSON schema list the
-  model receives, rendered from the same source the API sends it.
-- **Chat** — every reply is tagged with chips showing which tools produced it.
-- **Cart / Tool trace** — the live cart, and an expandable log of every call:
-  the arguments the model invented, the JSON it got back, the latency.
-
----
-
-## Example conversations
-
-Real transcripts from `gpt-4o-mini` against the seeded database.
-
-### 1 — a constraint becomes SQL
-
-```
-You:  Something vegan under 300 rupees
-      → search_dish(diet="vegan", max_price=300)
-
-Bot:  Here are some vegan dishes under ₹300:
-      - Corn Seekh Kebab (₹270)
-      - Soya Chaap Tikka (₹260)
-      - Corn Tandoori (₹250)
-```
-
-The model turned an English sentence into two schema arguments, which became a
-`WHERE diet IN (...) AND price <= 300` over 238 rows.
-
-### 2 — parallel tool calls
-
-```
-You:  Add a dal makhani and 2 garlic naan
-      → add_to_cart(dish_name="Dal Makhani")             ┐ same turn,
-      → add_to_cart(dish_name="Garlic Naan", quantity=2) ┘ one response
-```
-
-One model response, two `tool_calls`. The loop runs both and returns two `tool`
-messages, each carrying its own `tool_call_id`.
-
-### 3 — 12,000 rows of history, answered in one call
-
-```
-You:  What did I order last time?
-      → find_past_orders(limit=5)
-
-Bot:  Last time you ordered:
-      - Lamb Rogan Josh (1 × ₹700)
-      - Pudina Paratha (1 × ₹95)
-      - Chicken Malai (2 × ₹480)
-      Would you like to reorder any of these?
-```
-
-Impossible before the database existed. The query is scoped to the signed-in
-user in SQL — see the isolation test below.
-
-### 4 — the app remembers you
-
-```
-You:  Place the order using my usual details
-      → get_my_profile()
-
-Bot:  I have your usual details saved:
-      - Name: Demo Customer
-      - Phone: 9990320822
-      - Address: 83 Nehru Street
-      - Pincode: 722797
-      - Payment Method: Wallet
-      Shall I go ahead and place the order with these?
-```
-
-This is what "the app remembers me" actually means: a tool that reads the
-customer's own history, plus one line in the system prompt telling the model to
-offer the saved details rather than demand them again — and to confirm before
-using them.
-
-### 5 — the model asks instead of calling
-
-```
-You:  Okay place the order
-      → (no tools called)
-
-Bot:  I need a few details to place your order:
-      1. Your full name    2. Your 10-digit mobile number
-      3. Your full address 4. Your 6-digit pincode
-      5. Your payment method
-```
-
-**The most valuable example here.** `place_order` has five required parameters,
-so the model cannot call it yet — and rather than inventing a name and phone
-number, it stops and asks. That behaviour comes from the `required` array in the
-schema plus one rule in the system prompt.
-
-### 6 — a failure the model has to explain
-
-```
-You:  Apply SAVE20 and give me the bill for 755001
-      → apply_coupon(code="SAVE20")     ✗ ok: false
-      → calc_total(pincode="755001")    ✓
-
-Bot:  SAVE20 can't be applied — your cart is ₹80 short of the ₹800 minimum.
-      Your current bill: subtotal ₹720, delivery ₹29, packaging ₹20,
-      tax ₹36 → total ₹805.
-```
-
-The ₹80 shortfall was computed in Python and handed over in the tool's `hint`.
-The model relayed it; it did not calculate it.
-
-### 7 — the full lifecycle
-
-```
-You:  Place the order for Waqar, 9876543210, Flat 4B Nehru Street, 755001, cash on delivery
-      → place_order(...)          ✓  ORD-13042
-You:  Cancel that order, changed my mind
-      → cancel_order(...)         ✓
-```
-
-Ask again 12 minutes later and `cancel_order` refuses — the order is out for
-delivery by then, and the model must relay the refusal and the support number
-rather than override it.
-
-### More to try
-
-| Say this | What it exercises |
-|---|---|
-| `What do you recommend?` | `popular_dishes` — ranked over 35,170 order lines |
-| `Is the kitchen open right now?` | `get_current_time` — models have no clock |
-| `Add a panner tika` | fuzzy matching an unambiguous typo |
-| `Add a biryani` | ambiguity — the tool asks *which of the 18* |
-| `Apply MONSOON25` | an expired coupon, with alternatives offered |
-| `Deliver to 110001` | an unserviceable pincode |
-| `What's my total?` (empty cart) | a clean refusal, not a crash |
-
----
-
-## The 15 tools
+## The 18 tools
 
 | # | Tool | Arguments | What it teaches |
 |---|---|---|---|
@@ -370,9 +303,116 @@ rather than override it.
 | 12 | `cancel_order` | `order_id*, reason?` | a business rule it must relay, not override |
 | 13 | `find_past_orders` | `limit?` | history — only possible with a database |
 | 14 | `get_my_profile` | — | **memory**: the customer's own saved details |
-| 15 | `get_current_time` | — | grounding — an LLM has no clock |
+| 15 | `get_spend_summary` | `period?` | an aggregate the model must not compute itself |
+| 16 | `get_order_trend` | `group_by? periods?` | a time series → **two** charts, never a dual axis |
+| 17 | `get_spend_breakdown` | `dimension? period? limit?` | a ranked GROUP BY → bar chart |
+| 18 | `get_current_time` | — | grounding — an LLM has no clock |
 
 `*` = required.
+
+---
+
+## Charts
+
+The three analytics tools attach a `charts` array to their JSON result. The UI
+draws each entry as inline SVG under the assistant's reply — no charting
+library, no CDN. A client that ignores the key still gets every number in the
+JSON, so **the chart is an enhancement and never the only copy of the answer**.
+
+Five decisions, all deliberate:
+
+- **The form follows the job.** A handful of headline numbers is a **stat row**
+  (`get_spend_summary`), a measure over consecutive periods is a **line + area**
+  (`get_order_trend`), and ranked magnitudes are **horizontal bars**
+  (`get_spend_breakdown`) because dish names are long. A single number is never
+  a one-bar bar chart.
+- **One y-axis, always.** `get_order_trend` returns spend and order count as two
+  separate single-series charts. Putting two different units on twin axes is the
+  most misread chart there is, and a test asserts this tool cannot produce one.
+- **Colour follows the measure, not the chart.** Spend is always blue
+  (`#3987e5`), order counts always orange (`#d95926`) — so the reader learns the
+  encoding once. Both were validated against this app's dark chart surface for
+  lightness band, chroma floor, colourblind separation (ΔE 26.8 protan) and
+  ≥3:1 contrast.
+- **Selective labels, recessive grid.** Only the final point carries a value
+  label; x labels thin out automatically past eight buckets; gridlines sit at
+  10% white. A number on every point is noise.
+- **Every chart ships a table view.** The `Table` toggle is a real control on
+  every figure, so colour and geometry are never the only way to read the data.
+  Marks also carry hover tooltips.
+
+---
+
+## Example conversations
+
+Real transcripts from `gpt-4o-mini` against the seeded database.
+
+### A constraint becomes SQL
+
+```
+You:  Something vegan under 300 rupees
+      → search_dish(diet="vegan", max_price=300)
+
+Bot:  Corn Seekh Kebab (₹270) · Soya Chaap Tikka (₹260) · Corn Tandoori (₹250)
+```
+
+The model turned an English sentence into two schema arguments, which became a
+`WHERE diet IN (...) AND price <= 300` over 238 rows.
+
+### 12,000 rows of history, answered in one call
+
+```
+You:  What did I order last time?
+      → find_past_orders(limit=5)
+
+Bot:  Lamb Rogan Josh (1 × ₹700), Pudina Paratha (1 × ₹95), Chicken Malai (2 × ₹480)
+```
+
+Impossible before the database existed. The query is scoped to the signed-in
+user in SQL — see the isolation test below.
+
+### The model asks instead of calling
+
+```
+You:  Okay place the order
+      → (no tools called)
+
+Bot:  I need a few details: your full name, 10-digit mobile, full address,
+      pincode, and payment method.
+```
+
+**The most valuable example here.** `place_order` has five required parameters,
+so the model cannot call it yet — and rather than inventing a name and phone
+number, it stops and asks.
+
+### A failure the model has to explain
+
+```
+You:  Apply SAVE20 and give me the bill for 755001
+      → apply_coupon(code="SAVE20")     ✗ ok: false
+      → calc_total(pincode="755001")    ✓
+
+Bot:  SAVE20 can't be applied — your cart is ₹80 short of the ₹800 minimum.
+      Total: ₹805 (subtotal ₹720, delivery ₹29, packaging ₹20, tax ₹36).
+```
+
+The ₹80 shortfall was computed in Python and handed over in the tool's `hint`.
+The model relayed it; it did not calculate it.
+
+### More to try
+
+| Say this | What it exercises |
+|---|---|
+| `What do you recommend?` | `popular_dishes` — ranked over 35,170 order lines |
+| `How much did I spend today?` | `get_spend_summary` → stat tiles |
+| `Show my orders per month` | `get_order_trend` → two line charts |
+| `What do I spend the most on?` | `get_spend_breakdown` → bar chart |
+| `Is the kitchen open right now?` | `get_current_time` — models have no clock |
+| `Add a panner tika` | fuzzy matching an unambiguous typo |
+| `Add a biryani` | ambiguity — the tool asks *which of the 18* |
+| `Apply MONSOON25` | an expired coupon, with alternatives offered |
+| `Deliver to 110001` | an unserviceable pincode |
+| `What's my total?` (empty cart) | a clean refusal, not a crash |
 
 ---
 
@@ -381,7 +421,8 @@ rather than override it.
 ```mermaid
 flowchart LR
     subgraph browser["🖥️  Browser"]
-        UI["index.html · app.js · styles.css<br/><i>login · chats · cart · tool trace</i>"]
+        UI["index.html · app.js<br/><i>login · chats · cart · trace</i>"]
+        CH["charts.js<br/><i>inline SVG, no library</i>"]
     end
 
     subgraph server["⚙️  FastAPI"]
@@ -389,7 +430,7 @@ flowchart LR
         AU["auth.py<br/><i>HttpOnly cookie → user</i>"]
         SRV["server.py<br/><i>routes only, no logic</i>"]
         AG["agent.py<br/><b>THE LOOP</b>"]
-        TL["tools.py<br/><i>15 plain functions</i>"]
+        TL["tools.py<br/><i>18 plain functions</i>"]
         SC["schemas.py<br/><i>JSON catalogue</i>"]
         RP["repository.py<br/><i>every SQL query</i>"]
         LC["llm_client.py<br/><i>Azure wrapper</i>"]
@@ -400,7 +441,8 @@ flowchart LR
 
     UI -- "POST /api/chat<br/>+ session cookie" --> AU
     AU --> SRV
-    SRV -- "reply + trace + cart" --> UI
+    SRV -- "reply + trace + charts + cart" --> UI
+    UI -- "chart specs" --> CH
 
     SRV --> AG
     AG -- "messages + tools" --> LC
@@ -441,7 +483,6 @@ runs against SQL Server in production and SQLite in the tests.
 ### File map
 
 ```
-tool_learing/
 ├── run.py                  one command: create + seed + serve
 ├── app/
 │   ├── config.py           the only module that reads os.environ
@@ -453,14 +494,21 @@ tool_learing/
 │   ├── seed.py             schema bootstrap + 47.7k rows
 │   ├── data.py             business constants (tax, fees, lifecycle)
 │   ├── llm_client.py       Azure wrapper; SDK errors → readable ones
-│   ├── tools.py            the 15 tools — no SQL, no LLM
+│   ├── tools.py            the 18 tools — no SQL, no LLM
 │   ├── schemas.py          the JSON catalogue the model sees ← the real prompt
 │   ├── agent.py            THE LOOP — the file worth reading twice
 │   └── server.py           FastAPI routes; owns no business logic
-├── web/                    login screen + three-panel app, no framework
+├── web/
+│   ├── index.html          login screen + three-panel app
+│   ├── styles.css          one dark theme, no framework
+│   ├── app.js              chat, chats sidebar, cart, trace
+│   └── charts.js           SVG stat tiles, lines and bars
+├── scripts/
+│   └── screenshots.py      drives Chromium to regenerate the README images
+├── docs/screenshots/       the images above
 └── tests/
     ├── conftest.py         SQLite fixtures, two isolated users
-    ├── test_tools.py       business logic + authorisation
+    ├── test_tools.py       business logic, analytics, authorisation
     └── test_agent.py       the loop, driven by a scripted fake model
 ```
 
@@ -472,7 +520,7 @@ tool_learing/
 | `GET` | `/api/auth/me` | current user + lifetime stats |
 | `GET` `POST` | `/api/conversations` | list / create a chat |
 | `GET` `DELETE` | `/api/conversations/{id}` | full transcript / delete |
-| `POST` | `/api/chat` | `{conversation_id, message}` → reply + trace + cart |
+| `POST` | `/api/chat` | `{conversation_id, message}` → reply + trace + charts + cart |
 | `GET` | `/api/menu` · `/api/tools` · `/api/health` | public reference data |
 
 Interactive docs at `/docs` while the server runs.
@@ -480,6 +528,22 @@ Interactive docs at `/docs` while the server runs.
 ---
 
 ## How tool calling actually works
+
+### One question is at least two LLM calls
+
+This is the part people get wrong first. The rule is **calls = tool rounds + 1**:
+
+| The customer said | LLM calls | Tools run |
+|---|---:|---|
+| `Hello` | **1** | 0 |
+| `What did I spend today?` | **2** | 1 |
+| `Add a garlic naan and place the order with my saved details` | **2** | 2 |
+
+The model *cannot* answer on the first call, because at that moment it does not
+have the data — it only knows a function exists that could get it. Note row 3:
+**parallel tools are free.** Two tools asked for in the same response still cost
+two calls; only *dependent* tools add a round-trip. Every `/api/chat` response
+returns `iterations`, and that number is the call count for that message.
 
 ### The loop
 
@@ -503,8 +567,8 @@ repeat up to MAX_TOOL_ITERATIONS times:
 
 All of it lives in [`app/agent.py`](app/agent.py), heavily commented.
 
-Here is one real turn — `"add a dal makhani and 2 garlic naan"` — which takes
-**two** round-trips to Azure and runs **two** tools in between:
+Here is one real turn — `"add a dal makhani and 2 garlic naan"` — two
+round-trips to Azure with two tools in between:
 
 ```mermaid
 sequenceDiagram
@@ -520,7 +584,7 @@ sequenceDiagram
 
     rect rgba(255,154,60,0.10)
     note over A,M: round-trip 1 — the model ASKS
-    A->>M: transcript + 15 tool schemas
+    A->>M: transcript + 18 tool schemas
     M-->>A: finish_reason: "tool_calls"<br/>[call_a add_to_cart, call_b add_to_cart]
     end
 
@@ -548,9 +612,8 @@ sequenceDiagram
     A-->>C: answer + the trace of both calls
 ```
 
-The loop exits because the second reply has **no** `tool_calls`. Every message
-in that diagram is a row in `chat_messages`, which is why the next turn — or
-the next browser — replays exactly the same context.
+Every message in that diagram is a row in `chat_messages`, which is why the next
+turn — or the next browser — replays exactly the same context.
 
 ### Deciding what happens each iteration
 
@@ -588,8 +651,8 @@ never stops calling tools cannot hang the request.
 
 The SAVEPOINT detail matters once a database is involved. A tool that blows up
 halfway through a write would otherwise poison the transaction for the rest of
-the turn — and a plain `rollback()` would throw away the transcript rows
-already written. A nested transaction undoes **only that tool**.
+the turn — and a plain `rollback()` would throw away the transcript rows already
+written. A nested transaction undoes **only that tool**.
 
 ### What goes over the wire
 
@@ -676,9 +739,10 @@ language model, so it can be malformed. Parse it in a `try`.
 | The request never terminates | the model keeps calling tools | `MAX_TOOL_ITERATIONS` + a graceful fallback |
 | `Incorrect syntax near '1'` | `.is_(True)` renders as `IS 1` | SQL Server has no BOOLEAN — use `== True` |
 | Duplicate key on `orders.code` | two code formulas disagreed | one shared `order_code_for(id)` |
+| The chat box is usable before login | a CSS `display` rule outranks `[hidden]` | explicit `[hidden] { display: none !important }` |
 
-Every row in that table is a bug that actually happened while building this,
-not a textbook example.
+Every row in that table is a bug that actually happened while building this, not
+a textbook example.
 
 ### Why the schema descriptions matter more than the Python
 
@@ -697,10 +761,15 @@ documentation, it is *prompt*. Compare:
                "the delivery fee is included."
 ```
 
-Three habits that pay for themselves: say **when** to use a tool, use `enum`
-for every closed value set, and mark a field `required` only when the tool
-genuinely cannot run without it — because each required field is a question the
-model must ask the user first.
+Three habits that pay for themselves: say **when** to use a tool, use `enum` for
+every closed value set, and mark a field `required` only when the tool genuinely
+cannot run without it — because each required field is a question the model must
+ask the user first.
+
+**Where to read the prompts:** the system prompt is `SYSTEM_PROMPT` in
+[`app/agent.py`](app/agent.py) — eight hard rules plus a style block. The tool
+descriptions in [`app/schemas.py`](app/schemas.py) are the other half of the
+prompt, and the app shows them to you live in the **Tools** panel.
 
 ---
 
@@ -713,8 +782,8 @@ properly:
   user, compared with `hmac.compare_digest`. Nothing is stored in plaintext and
   nothing is reversible.
 - **Sessions** are 32 random bytes in an **HttpOnly** cookie; the database
-  stores only the SHA-256 hash, so a dump of `auth_tokens` cannot be replayed
-  as a login. JavaScript on the page cannot read the cookie.
+  stores only the SHA-256 hash, so a dump of `auth_tokens` cannot be replayed as
+  a login. JavaScript on the page cannot read the cookie.
 - **Authorisation is in SQL, not in the prompt.** Every user-scoped query
   filters by `user_id`. A model that hallucinates a valid order id belonging to
   somebody else gets "not found", never a stranger's address:
@@ -727,8 +796,10 @@ properly:
       assert tools.find_past_orders(other_ctx)["count"] == 0
   ```
 
-- **Login failures** say "email or password is incorrect" for both cases, so
-  the endpoint cannot be used to enumerate which emails have accounts.
+  The analytics tools are covered by the same kind of test — one customer's
+  spend total is never visible to another.
+- **Login failures** say "email or password is incorrect" for both cases, so the
+  endpoint cannot be used to enumerate which emails have accounts.
 - **A missing chat returns 404, not 403** — never confirm that somebody else's
   data exists.
 
@@ -747,26 +818,28 @@ because localhost is plain HTTP), and put the app behind HTTPS.
 | `Azure returned HTTP 404` | `MINI_MODEL_NAME` is not a deployment on that resource. Use the *deployment* name, not the model name |
 | `Azure rejected the API key` | wrong key, or a key from a different resource than the endpoint |
 | `429` | Azure rate limit — wait, or raise the deployment's TPM quota |
-| Want a clean database | drop `BitesBytes` in SSMS and run `python run.py` again |
+| Schema changed after a `git pull` | there is no migration tool here by design — drop `BitesBytes` and run `python run.py` again |
+| `playwright` not found | screenshots are dev-only: `pip install playwright && playwright install chromium` |
 
 ---
 
 ## Extending it
 
-Adding a sixteenth tool is three edits, always in this order:
+Adding a nineteenth tool is three edits, always in this order:
 
 1. Write the function in `app/tools.py` (returning the `ok` envelope, taking
    `ctx` first) and add it to `TOOL_REGISTRY`.
-2. Add its schema to `TOOL_SCHEMAS` in `app/schemas.py`. **The `name` must
-   match the registry key exactly** — that string is the entire contract, and
+2. Add its schema to `TOOL_SCHEMAS` in `app/schemas.py`. **The `name` must match
+   the registry key exactly** — that string is the entire contract, and
    `test_every_schema_has_a_matching_registry_entry` fails if they drift.
 3. Add a test in `tests/test_tools.py`.
 
 The UI needs no changes: the Tools panel and the trace render whatever the
-registry and the schemas contain.
+registry and the schemas contain. If the tool returns a `charts` array, the
+chart appears too.
 
-Natural next steps: stream replies with server-sent events, add an admin view
-over the 12,000 seeded orders, or add a second agent that handles complaints.
+Natural next steps: stream replies with server-sent events, add an admin
+dashboard over the 12,000 seeded orders, or add a second agent for complaints.
 
 ---
 

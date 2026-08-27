@@ -72,6 +72,13 @@ result this turn -- earlier results in this conversation are already stale.
 details, call get_my_profile and offer what is saved ("same address as last \
 time?"). For "my usual", "what did I order before" or "reorder", call \
 find_past_orders. For "what's good here", call popular_dishes.
+8. Any question about money over time -- "what did I spend today", "how much \
+last week", "orders per month", "what do I spend most on" -- is answered by \
+get_spend_summary, get_order_trend or get_spend_breakdown. Never total up \
+find_past_orders yourself; it returns only the most recent handful. The UI \
+draws these results as charts automatically, so give the headline in one or \
+two sentences and let the chart carry the detail -- do not read every bucket \
+aloud.
 
 STYLE:
 - Reply in 1-4 short sentences unless listing dishes.
@@ -104,11 +111,15 @@ class AgentReply:
     message: str
     trace: list[ToolInvocation] = field(default_factory=list)
     iterations: int = 0
+    #: Which exchange this was, so the UI can label the trace "Turn 3" rather
+    #: than "Latest turn" -- which reads wrong once a second turn arrives.
+    turn: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {"message": self.message,
                 "trace": [call.as_dict() for call in self.trace],
-                "iterations": self.iterations}
+                "iterations": self.iterations,
+                "turn": self.turn}
 
 
 class OrderingAgent:
@@ -132,7 +143,7 @@ class OrderingAgent:
         working = [{"role": "system", "content": system}] + self._history(ctx)
         turn = repo.next_turn(ctx.db, ctx.conversation.id)
 
-        reply = AgentReply(message="")
+        reply = AgentReply(message="", turn=turn)
 
         for iteration in range(1, self._max_iterations + 1):
             reply.iterations = iteration
