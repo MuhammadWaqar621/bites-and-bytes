@@ -843,6 +843,17 @@ dashboard over the 12,000 seeded orders, or add a second agent for complaints.
 
 ---
 
+## Contact
+
+**Muhammad Waqar**
+
+- Email — [waqarsahi621@gmail.com](mailto:waqarsahi621@gmail.com)
+- GitHub — [@MuhammadWaqar621](https://github.com/MuhammadWaqar621)
+
+Happy to walk through the agent loop, the schema, or the chart decisions.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
